@@ -125,6 +125,7 @@ struct priv {
 	unsigned int sriov:1; /* This is a VF or PF with VF devices. */
 	unsigned int mps:2; /* Multi-packet send mode (0: disabled). */
 	unsigned int mpw_hdr_dseg:1; /* Enable DSEGs in the title WQEBB. */
+	unsigned int link_is_ib:1; /* When set port link layer is Infiniband. */
 	unsigned int cqe_comp:1; /* Whether CQE compression is enabled. */
 	unsigned int pending_alarm:1; /* An alarm is pending. */
 	unsigned int tso:1; /* Whether TSO is supported. */
@@ -230,7 +231,8 @@ void priv_select_rx_function(struct priv *);
 
 /* mlx5_mac.c */
 
-int priv_get_mac(struct priv *, uint8_t (*)[ETHER_ADDR_LEN]);
+int priv_get_mac(struct priv *, uint8_t *);
+void priv_ipoib_addr_to_qp_num(uint8_t *ipoib_addr, uint32_t *qp_num);
 void hash_rxq_mac_addrs_del(struct hash_rxq *);
 void priv_mac_addrs_disable(struct priv *);
 void mlx5_mac_addr_remove(struct rte_eth_dev *, uint32_t);

@@ -234,6 +234,25 @@ try_dev_id:
 }
 
 /**
+ * Checks if entry is located on ib sysfs path.
+ *
+ * @param[in] entry
+ *   Entry name.
+ *
+ * @return
+ *   1 if counter is located on ib sysfs path, 0 otherwise.
+ */
+static int
+priv_is_ib_entry(const char *entry)
+{
+	if (!strcmp(entry, "device/sriov_numvfs"))
+		return 1;
+	if (!strcmp(entry, "device/mlx5_num_vfs"))
+		return 1;
+	return 0;
+}
+
+/**
  * Check if the counter is located on ib counters file.
  *
  * @param[in] cntr
@@ -279,6 +298,10 @@ priv_sysfs_read(const struct priv *priv, const char *entry,
 
 	if (priv_is_ib_cntr(entry)) {
 		MKSTR(path, "%s/ports/1/hw_counters/%s",
+		      priv->ctx->device->ibdev_path, entry);
+		file = fopen(path, "rb");
+	} else if (priv->link_is_ib && priv_is_ib_entry(entry)) {
+		MKSTR(path, "%s/%s",
 		      priv->ctx->device->ibdev_path, entry);
 		file = fopen(path, "rb");
 	} else {
@@ -486,6 +509,9 @@ priv_get_mtu(struct priv *priv, uint16_t *mtu)
 
 	if (priv_get_sysfs_ulong(priv, "mtu", &ulong_mtu) == -1)
 		return -1;
+	if (priv->link_is_ib)
+		/* IPoIB net device substructs the IPoIB header. */
+		ulong_mtu += IPOIB_HDR_LEN;
 	*mtu = ulong_mtu;
 	return 0;
 }
@@ -593,30 +619,44 @@ dev_configure(struct rte_eth_dev *dev)
 		     (void *)dev, priv->txqs_n, txqs_n);
 		priv->txqs_n = txqs_n;
 	}
-	if (rxqs_n > priv->ind_table_max_size) {
-		ERROR("cannot handle this many RX queues (%u)", rxqs_n);
-		return EINVAL;
-	}
-	if (rxqs_n == priv->rxqs_n)
-		return 0;
-	INFO("%p: RX queues number update: %u -> %u",
-	     (void *)dev, priv->rxqs_n, rxqs_n);
-	priv->rxqs_n = rxqs_n;
-	/* If the requested number of RX queues is not a power of two, use the
-	 * maximum indirection table size for better balancing.
-	 * The result is always rounded to the next power of two. */
-	reta_idx_n = (1 << log2above((rxqs_n & (rxqs_n - 1)) ?
-				     priv->ind_table_max_size :
-				     rxqs_n));
-	if (priv_rss_reta_index_resize(priv, reta_idx_n))
-		return ENOMEM;
-	/* When the number of RX queues is not a power of two, the remaining
-	 * table entries are padded with reused WQs and hashes are not spread
-	 * uniformly. */
-	for (i = 0, j = 0; (i != reta_idx_n); ++i) {
-		(*priv->reta_idx)[i] = j;
-		if (++j == rxqs_n)
-			j = 0;
+	if (priv->link_is_ib) {
+		if (rxqs_n >  (unsigned int)priv->device_attr.max_qp) {
+			ERROR("cannot handle this many RX queues (%u)", rxqs_n);
+			return EINVAL;
+		}
+		if (rxqs_n != priv->rxqs_n) {
+			INFO("%p: RX queues number update: %u -> %u",
+					(void *)dev, priv->rxqs_n, rxqs_n);
+			priv->rxqs_n = rxqs_n;
+		}
+	} else {
+		if (rxqs_n > priv->ind_table_max_size) {
+			ERROR("cannot handle this many RX queues (%u)", rxqs_n);
+			return EINVAL;
+		}
+		if (rxqs_n == priv->rxqs_n)
+			return 0;
+		INFO("%p: RX queues number update: %u -> %u",
+				(void *)dev, priv->rxqs_n, rxqs_n);
+		priv->rxqs_n = rxqs_n;
+		/* If the requested number of RX queues is not a power of two,
+		 * use the maximum indirection table size for better balancing.
+		 * The result is always rounded to the next power of two.
+		 */
+		reta_idx_n = (1 << log2above((rxqs_n & (rxqs_n - 1)) ?
+					priv->ind_table_max_size :
+					rxqs_n));
+		if (priv_rss_reta_index_resize(priv, reta_idx_n))
+			return ENOMEM;
+		/* When the number of RX queues is not a power of two,
+		 * the remaining table entries are padded with reused WQs and
+		 * hashes are not spread uniformly.
+		 */
+		for (i = 0, j = 0; (i != reta_idx_n); ++i) {
+			(*priv->reta_idx)[i] = j;
+			if (++j == rxqs_n)
+				j = 0;
+		}
 	}
 	return 0;
 }
@@ -1005,8 +1045,10 @@ recover:
 		if (rehash)
 			ret = rxq_rehash(dev, rxq_ctrl);
 		else
-			ret = rxq_ctrl_setup(dev, rxq_ctrl, 1 << rxq->elts_n,
-					     rxq_ctrl->socket, NULL, rxq->mp);
+			ret = rxq_ctrl_setup_eth(dev, rxq_ctrl,
+						 1 << rxq->elts_n,
+						 rxq_ctrl->socket, NULL,
+						 rxq->mp);
 		if (!ret)
 			continue;
 		/* Attempt to roll back in case of error. */
@@ -1506,11 +1548,11 @@ mlx5_secondary_data_setup(struct priv *priv)
 					     sizeof(struct rte_mbuf *), 0,
 					     primary_txq_ctrl->socket);
 		if (txq_ctrl != NULL) {
-			if (txq_ctrl_setup(priv->dev,
-					   txq_ctrl,
-					   1 << primary_txq->elts_n,
-					   primary_txq_ctrl->socket,
-					   NULL) == 0) {
+			if (txq_ctrl_setup_eth(priv->dev,
+					       txq_ctrl,
+					       1 << primary_txq->elts_n,
+					       primary_txq_ctrl->socket,
+					       NULL) == 0) {
 				txq_ctrl->txq.stats.idx =
 					primary_txq->stats.idx;
 				tx_queues[i] = &txq_ctrl->txq;

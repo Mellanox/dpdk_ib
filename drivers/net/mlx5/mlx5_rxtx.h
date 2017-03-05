@@ -132,7 +132,10 @@ struct rxq {
 struct rxq_ctrl {
 	struct priv *priv; /* Back pointer to private data. */
 	struct ibv_cq *cq; /* Completion Queue. */
-	struct ibv_exp_wq *wq; /* Work Queue. */
+	union {
+		struct ibv_qp *qp; /* Queue Pair. */
+		struct ibv_exp_wq *wq; /* Work Queue. */
+	} rq;
 	struct fdir_queue *fdir_queue; /* Flow director queue. */
 	struct ibv_mr *mr; /* Memory Region (for mp). */
 	struct ibv_comp_channel *channel;
@@ -304,9 +307,12 @@ int priv_create_intr_vec(struct priv *priv);
 void priv_destroy_intr_vec(struct priv *priv);
 void rxq_cleanup(struct rxq_ctrl *);
 int rxq_rehash(struct rte_eth_dev *, struct rxq_ctrl *);
-int rxq_ctrl_setup(struct rte_eth_dev *, struct rxq_ctrl *, uint16_t,
-		   unsigned int, const struct rte_eth_rxconf *,
-		   struct rte_mempool *);
+int rxq_ctrl_setup_eth(struct rte_eth_dev *, struct rxq_ctrl *, uint16_t,
+		       unsigned int, const struct rte_eth_rxconf *,
+		       struct rte_mempool *);
+int rxq_ctrl_setup_ipoib(struct rte_eth_dev *, struct rxq_ctrl *, uint16_t,
+			 unsigned int, const struct rte_eth_rxconf *,
+			 struct rte_mempool *);
 int mlx5_rx_queue_setup(struct rte_eth_dev *, uint16_t, uint16_t, unsigned int,
 			const struct rte_eth_rxconf *, struct rte_mempool *);
 void mlx5_rx_queue_release(void *);
@@ -315,8 +321,10 @@ uint16_t mlx5_rx_burst_secondary_setup(void *, struct rte_mbuf **, uint16_t);
 /* mlx5_txq.c */
 
 void txq_cleanup(struct txq_ctrl *);
-int txq_ctrl_setup(struct rte_eth_dev *, struct txq_ctrl *, uint16_t,
-		   unsigned int, const struct rte_eth_txconf *);
+int txq_ctrl_setup_eth(struct rte_eth_dev *, struct txq_ctrl *, uint16_t,
+		       unsigned int, const struct rte_eth_txconf *);
+int txq_ctrl_setup_ipoib(struct rte_eth_dev *, struct txq_ctrl *, uint16_t,
+			 unsigned int, const struct rte_eth_txconf *);
 int mlx5_tx_queue_setup(struct rte_eth_dev *, uint16_t, uint16_t, unsigned int,
 			const struct rte_eth_txconf *);
 void mlx5_tx_queue_release(void *);

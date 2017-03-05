@@ -79,14 +79,34 @@
  *   0 on success, -1 on failure and errno is set.
  */
 int
-priv_get_mac(struct priv *priv, uint8_t (*mac)[ETHER_ADDR_LEN])
+priv_get_mac(struct priv *priv, uint8_t *mac)
 {
 	struct ifreq request;
+	unsigned int addr_len = priv->link_is_ib ? IPOIB_ADDR_LEN :
+						   ETHER_ADDR_LEN;
 
 	if (priv_ifreq(priv, SIOCGIFHWADDR, &request))
 		return -1;
-	memcpy(mac, request.ifr_hwaddr.sa_data, ETHER_ADDR_LEN);
+	memcpy(mac, request.ifr_hwaddr.sa_data, addr_len);
 	return 0;
+}
+
+/**
+ * Translate IPoIB HW address to Verbs QP number.
+ *
+ * @param[in] ipoib_addr
+ *   Byte field of IPoIB HW addr.
+ * @param[out] qp_num
+ *   Pointer to verbs QP number.
+ */
+void
+priv_ipoib_addr_to_qp_num(uint8_t *ipoib_addr, uint32_t *qp_num)
+{
+	uint8_t *qp_num_bytes = (uint8_t *)qp_num;
+
+	qp_num_bytes[0] = ipoib_addr[3];
+	qp_num_bytes[1] = ipoib_addr[2];
+	qp_num_bytes[2] = ipoib_addr[1];
 }
 
 /**

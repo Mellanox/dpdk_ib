@@ -89,4 +89,10 @@
 /* Maximum Packet headers size (L2+L3+L4) for TSO. */
 #define MLX5_MAX_TSO_HEADER 128
 
+/* IPoIB MAC address length. */
+#define IPOIB_ADDR_LEN 20
+
+/* IPoIB header length. */
+#define IPOIB_HDR_LEN 4
+
 #endif /* RTE_PMD_MLX5_DEFS_H_ */

@@ -427,9 +427,11 @@ priv_fdir_queue_destroy(struct priv *priv, struct fdir_queue *fdir_queue)
 		}
 	}
 	assert(fdir_queue->qp);
-	claim_zero(ibv_destroy_qp(fdir_queue->qp));
-	assert(fdir_queue->ind_table);
-	claim_zero(ibv_exp_destroy_rwq_ind_table(fdir_queue->ind_table));
+	if (!priv->link_is_ib)
+		claim_zero(ibv_destroy_qp(fdir_queue->qp));
+	if (fdir_queue->ind_table)
+		claim_zero(ibv_exp_destroy_rwq_ind_table(
+					fdir_queue->ind_table));
 	if (fdir_queue->wq)
 		claim_zero(ibv_exp_destroy_wq(fdir_queue->wq));
 	if (fdir_queue->cq)
@@ -560,9 +562,9 @@ priv_get_fdir_queue(struct priv *priv, uint16_t idx)
 		container_of((*priv->rxqs)[idx], struct rxq_ctrl, rxq);
 	struct fdir_queue *fdir_queue = rxq_ctrl->fdir_queue;
 
-	assert(rxq_ctrl->wq);
+	assert(rxq_ctrl->rq.wq);
 	if (fdir_queue == NULL) {
-		fdir_queue = priv_fdir_queue_create(priv, rxq_ctrl->wq,
+		fdir_queue = priv_fdir_queue_create(priv, rxq_ctrl->rq.wq,
 						    rxq_ctrl->socket);
 		rxq_ctrl->fdir_queue = fdir_queue;
 	}
@@ -618,9 +620,13 @@ priv_fdir_filter_enable(struct priv *priv,
 		return 0;
 
 	/* Get fdir_queue for specific queue. */
-	if (mlx5_fdir_filter->behavior == RTE_ETH_FDIR_REJECT)
+	if (mlx5_fdir_filter->behavior == RTE_ETH_FDIR_REJECT) {
+		if (priv->link_is_ib) {
+			/* Drop rules are not yet supported for IPoIB. */
+			return EINVAL;
+		}
 		fdir_queue = priv_get_fdir_drop_queue(priv);
-	else
+	} else
 		fdir_queue = priv_get_fdir_queue(priv,
 						 mlx5_fdir_filter->queue);
 

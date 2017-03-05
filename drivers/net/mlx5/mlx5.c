@@ -207,7 +207,7 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	memset(priv, 0, sizeof(*priv));
 }
 
-static const struct eth_dev_ops mlx5_dev_ops = {
+static struct eth_dev_ops mlx5_dev_ops = {
 	.dev_configure = mlx5_dev_configure,
 	.dev_start = mlx5_dev_start,
 	.dev_stop = mlx5_dev_stop,
@@ -409,6 +409,31 @@ mlx5_args_assign(struct priv *priv, struct mlx5_args *args)
 }
 
 /**
+ * Set the operations supported for IB link.
+ */
+static void
+adjust_dev_ops_ipoib(void)
+{
+	mlx5_dev_ops.promiscuous_enable = NULL;
+	mlx5_dev_ops.promiscuous_disable = NULL;
+	mlx5_dev_ops.allmulticast_enable = NULL;
+	mlx5_dev_ops.allmulticast_disable = NULL;
+	mlx5_dev_ops.vlan_filter_set = NULL;
+	mlx5_dev_ops.allmulticast_disable = NULL;
+	mlx5_dev_ops.flow_ctrl_get = NULL;
+	mlx5_dev_ops.flow_ctrl_set = NULL;
+	mlx5_dev_ops.mac_addr_remove = NULL;
+	mlx5_dev_ops.mac_addr_add = NULL;
+	mlx5_dev_ops.mac_addr_set = NULL;
+	mlx5_dev_ops.mtu_set = NULL;
+	mlx5_dev_ops.vlan_strip_queue_set = NULL;
+	mlx5_dev_ops.vlan_offload_set = NULL;
+	mlx5_dev_ops.reta_update = NULL;
+	mlx5_dev_ops.reta_query = NULL;
+	mlx5_dev_ops.rss_hash_update = NULL;
+}
+
+/**
  * DPDK callback to register a PCI device.
  *
  * This function creates an Ethernet device for each port of a given
@@ -543,6 +568,7 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		struct ibv_exp_device_attr exp_device_attr;
 		struct ether_addr mac;
 		uint16_t num_vfs = 0;
+		uint16_t link_layer = 0;
 		struct mlx5_args args = {
 			.cqe_comp = MLX5_ARG_UNSET,
 			.txq_inline = MLX5_ARG_UNSET,
@@ -574,11 +600,17 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 			goto port_error;
 		}
 
-		if (port_attr.link_layer != IBV_LINK_LAYER_ETHERNET) {
-			ERROR("port %d is not configured in Ethernet mode",
+		if ((port_attr.link_layer != IBV_LINK_LAYER_ETHERNET) &&
+		    (port_attr.link_layer != IBV_LINK_LAYER_INFINIBAND)) {
+			ERROR("port %d is not configured in Ethernet or "
+			      "Infiniband mode",
 			      port);
 			goto port_error;
 		}
+		link_layer = port_attr.link_layer;
+		DEBUG("port %u link is %s", port,
+			link_layer == IBV_LINK_LAYER_ETHERNET ?
+			"Ethernet" : "Infiniband");
 
 		if (port_attr.state != IBV_PORT_ACTIVE)
 			DEBUG("port %d is not active: \"%s\" (%d)",
@@ -609,10 +641,14 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		priv->device_attr = device_attr;
 		priv->port = port;
 		priv->pd = pd;
-		priv->mtu = ETHER_MTU;
-		priv->mps = mps; /* Enable MPW by default if supported. */
+		priv->link_is_ib = (link_layer == IBV_LINK_LAYER_INFINIBAND);
+		priv->mtu = priv->link_is_ib ? 0 : ETHER_MTU;
+		/* Enable MPW by default if supported. */
+		priv->mps = priv->link_is_ib ? 0 : mps;
 		priv->cqe_comp = 1; /* Enable compression by default. */
 		priv->tunnel_en = tunnel_en;
+		if (priv->link_is_ib)
+			priv->device_attr.max_qp = 1;
 		err = mlx5_args(&args, pci_dev->device.devargs);
 		if (err) {
 			ERROR("failed to process device arguments: %s",
@@ -662,10 +698,17 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 
 		priv_get_num_vfs(priv, &num_vfs);
 		priv->sriov = (num_vfs || sriov);
-		priv->tso = ((priv->tso) &&
-			    (exp_device_attr.tso_caps.max_tso > 0) &&
-			    (exp_device_attr.tso_caps.supported_qpts &
-			    (1 << IBV_QPT_RAW_ETH)));
+		if (priv->link_is_ib) {
+			priv->tso = ((priv->tso) &&
+				     (exp_device_attr.tso_caps.max_tso > 0) &&
+				     (exp_device_attr.tso_caps.supported_qpts &
+				      (1 << IBV_QPT_UD)));
+		} else {
+			priv->tso = ((priv->tso) &&
+				     (exp_device_attr.tso_caps.max_tso > 0) &&
+				     (exp_device_attr.tso_caps.supported_qpts &
+				      (1 << IBV_QPT_RAW_ETH)));
+		}
 		if (priv->tso)
 			priv->max_tso_payload_sz =
 				exp_device_attr.tso_caps.max_tso;
@@ -693,34 +736,39 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 				priv->txq_inline = MLX5_WQE_SIZE_MAX -
 						   MLX5_WQE_SIZE;
 		}
-		/* Allocate and register default RSS hash keys. */
-		priv->rss_conf = rte_calloc(__func__, hash_rxq_init_n,
-					    sizeof((*priv->rss_conf)[0]), 0);
-		if (priv->rss_conf == NULL) {
-			err = ENOMEM;
-			goto port_error;
+		if (!priv->link_is_ib) {
+			/* Allocate and register default RSS hash keys. */
+			priv->rss_conf = rte_calloc(__func__, hash_rxq_init_n,
+					sizeof((*priv->rss_conf)[0]), 0);
+			if (priv->rss_conf == NULL) {
+				err = ENOMEM;
+				goto port_error;
+			}
+			err = rss_hash_rss_conf_new_key(priv,
+					rss_hash_default_key,
+					rss_hash_default_key_len,
+					ETH_RSS_PROTO_MASK);
+			if (err)
+				goto port_error;
+			/* Configure the first MAC address by default. */
+			if (priv_get_mac(priv, (uint8_t *)&mac.addr_bytes)) {
+				ERROR("cannot get MAC address, "
+				      "is mlx5_en loaded?"
+				      " (errno: %s)", strerror(errno));
+				goto port_error;
+			}
+			INFO("port %u MAC address is %02x:%02x:%02x:%02x:%02x:%02x",
+					priv->port,
+					mac.addr_bytes[0], mac.addr_bytes[1],
+					mac.addr_bytes[2], mac.addr_bytes[3],
+					mac.addr_bytes[4], mac.addr_bytes[5]);
+			/* Register MAC address. */
+			claim_zero(priv_mac_addr_add(priv, 0,
+				   (const uint8_t (*)[ETHER_ADDR_LEN])
+				    mac.addr_bytes));
+		} else {
+			adjust_dev_ops_ipoib();
 		}
-		err = rss_hash_rss_conf_new_key(priv,
-						rss_hash_default_key,
-						rss_hash_default_key_len,
-						ETH_RSS_PROTO_MASK);
-		if (err)
-			goto port_error;
-		/* Configure the first MAC address by default. */
-		if (priv_get_mac(priv, &mac.addr_bytes)) {
-			ERROR("cannot get MAC address, is mlx5_en loaded?"
-			      " (errno: %s)", strerror(errno));
-			goto port_error;
-		}
-		INFO("port %u MAC address is %02x:%02x:%02x:%02x:%02x:%02x",
-		     priv->port,
-		     mac.addr_bytes[0], mac.addr_bytes[1],
-		     mac.addr_bytes[2], mac.addr_bytes[3],
-		     mac.addr_bytes[4], mac.addr_bytes[5]);
-		/* Register MAC address. */
-		claim_zero(priv_mac_addr_add(priv, 0,
-					     (const uint8_t (*)[ETHER_ADDR_LEN])
-					     mac.addr_bytes));
 		/* Initialize FD filters list. */
 		err = fdir_init_filters_list(priv);
 		if (err)
@@ -753,12 +801,15 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 			err = ENOMEM;
 			goto port_error;
 		}
-
+		if (priv->link_is_ib) {
+			/* Ether dev is create with default Ether MTU. */
+			eth_dev->data->mtu = priv->mtu;
+		}
 		/* Secondary processes have to use local storage for their
 		 * private data as well as a copy of eth_dev->data, but this
 		 * pointer must not be modified before burst functions are
 		 * actually called. */
-		if (mlx5_is_secondary()) {
+		if (mlx5_is_secondary() && !priv->link_is_ib) {
 			struct mlx5_secondary_data *sd =
 				&mlx5_secondary_data[eth_dev->data->port_id];
 			sd->primary_priv = eth_dev->data->dev_private;
@@ -791,7 +842,8 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		eth_dev->dev_ops = &mlx5_dev_ops;
 
 		/* Bring Ethernet device up. */
-		DEBUG("forcing Ethernet interface up");
+		DEBUG("forcing %s interface up",
+			priv->link_is_ib ? "IPoIB" : "Ethernet");
 		priv_set_flags(priv, ~IFF_UP, IFF_UP);
 		mlx5_link_update(priv->dev, 1);
 		continue;

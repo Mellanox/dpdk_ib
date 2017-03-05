@@ -197,7 +197,7 @@ txq_setup(struct txq_ctrl *tmpl, struct txq_ctrl *txq_ctrl)
 }
 
 /**
- * Configure a TX queue.
+ * Configure an IPoIB TX queue.
  *
  * @param dev
  *   Pointer to Ethernet device structure.
@@ -214,9 +214,183 @@ txq_setup(struct txq_ctrl *tmpl, struct txq_ctrl *txq_ctrl)
  *   0 on success, errno value on failure.
  */
 int
-txq_ctrl_setup(struct rte_eth_dev *dev, struct txq_ctrl *txq_ctrl,
-	       uint16_t desc, unsigned int socket,
-	       const struct rte_eth_txconf *conf)
+txq_ctrl_setup_ipoib(struct rte_eth_dev *dev, struct txq_ctrl *txq_ctrl,
+		     uint16_t desc, unsigned int socket,
+		     const struct rte_eth_txconf *conf)
+{
+	struct priv *priv = mlx5_get_priv(dev);
+	struct txq_ctrl tmpl = {
+		.priv = priv,
+		.socket = socket,
+	};
+	union {
+		struct ibv_exp_qp_init_attr init;
+		struct ibv_exp_cq_init_attr cq;
+		struct ibv_exp_qp_attr mod;
+		struct ibv_exp_cq_attr cq_attr;
+	} attr;
+	uint8_t ipoib_addr[IPOIB_ADDR_LEN] = {0};
+	uint32_t ipoib_qp_num = 0;
+	int ret = 0;
+
+	if (mlx5_getenv_int("MLX5_ENABLE_CQE_COMPRESSION")) {
+		ret = ENOTSUP;
+		ERROR("MLX5_ENABLE_CQE_COMPRESSION must never be set");
+		goto error;
+	}
+	(void)conf; /* Thresholds configuration (ignored). */
+	assert(desc > MLX5_TX_COMP_THRESH);
+	tmpl.txq.elts_n = log2above(desc);
+	/* MRs will be registered in mp2mr[] later. */
+
+	attr.cq = (struct ibv_exp_cq_init_attr){
+		.comp_mask = 0,
+	};
+	tmpl.cq = ibv_exp_create_cq(priv->ctx,
+				    (((desc / MLX5_TX_COMP_THRESH) - 1) ?
+				     ((desc / MLX5_TX_COMP_THRESH) - 1) : 1),
+				    NULL, NULL, 0, &attr.cq);
+	if (tmpl.cq == NULL) {
+		ret = ENOMEM;
+		ERROR("%p: CQ creation failure: %s",
+		      (void *)dev, strerror(ret));
+		goto error;
+	}
+	DEBUG("priv->device_attr.max_qp_wr is %d",
+	      priv->device_attr.max_qp_wr);
+	DEBUG("priv->device_attr.max_sge is %d",
+	      priv->device_attr.max_sge);
+	priv_get_mac(priv, ipoib_addr);
+	priv_ipoib_addr_to_qp_num(ipoib_addr, &ipoib_qp_num);
+	DEBUG("port %u underlay qp num is 0x%x", priv->port, ipoib_qp_num);
+	attr.init = (struct ibv_exp_qp_init_attr){
+		/* CQ to be associated with the send queue. */
+		.send_cq = tmpl.cq,
+		/* CQ to be associated with the receive queue. */
+		.recv_cq = tmpl.cq,
+		.cap = {
+			/* Max number of outstanding WRs. */
+			.max_send_wr = ((priv->device_attr.max_qp_wr < desc) ?
+					priv->device_attr.max_qp_wr :
+					desc),
+			/*
+			 * Max number of scatter/gather elements in a WR,
+			 * must be 1 to prevent libmlx5 from trying to affect
+			 * too much memory. TX gather is not impacted by the
+			 * priv->device_attr.max_sge limit and will still work
+			 * properly.
+			 */
+			.max_send_sge = 1,
+		},
+		.qp_type = IBV_QPT_UD,
+		/* Do *NOT* enable this, completions events are managed per
+		 * TX burst. */
+		.sq_sig_all = 0,
+		.pd = priv->pd,
+		.associated_qpn = ipoib_qp_num,
+		.comp_mask = (IBV_EXP_QP_INIT_ATTR_PD |
+			      IBV_EXP_QP_INIT_ATTR_ASSOCIATED_QPN),
+	};
+	if (priv->txq_inline && (priv->txqs_n >= priv->txqs_inline)) {
+		tmpl.txq.max_inline =
+			((priv->txq_inline + (RTE_CACHE_LINE_SIZE - 1)) /
+			 RTE_CACHE_LINE_SIZE);
+		attr.init.cap.max_inline_data =
+			tmpl.txq.max_inline * RTE_CACHE_LINE_SIZE;
+		tmpl.txq.inline_en = 1;
+	}
+	if (priv->tso) {
+		uint16_t max_tso_inline = ((MLX5_MAX_TSO_HEADER +
+					   (RTE_CACHE_LINE_SIZE - 1)) /
+					    RTE_CACHE_LINE_SIZE);
+
+		attr.init.max_tso_header =
+			max_tso_inline * RTE_CACHE_LINE_SIZE;
+		attr.init.comp_mask |= IBV_EXP_QP_INIT_ATTR_MAX_TSO_HEADER;
+		tmpl.txq.max_inline = RTE_MAX(tmpl.txq.max_inline,
+					      max_tso_inline);
+		tmpl.txq.tso_en = 1;
+	}
+	tmpl.qp = ibv_exp_create_qp(priv->ctx, &attr.init);
+	if (tmpl.qp == NULL) {
+		ret = (errno ? errno : EINVAL);
+		ERROR("%p: QP creation failure: %s",
+		      (void *)dev, strerror(ret));
+		goto error;
+	}
+	DEBUG("TX queue capabilities: max_send_wr=%u, max_send_sge=%u,"
+	      " max_inline_data=%u",
+	      attr.init.cap.max_send_wr,
+	      attr.init.cap.max_send_sge,
+	      attr.init.cap.max_inline_data);
+	attr.mod = (struct ibv_exp_qp_attr){
+		.qp_state = IBV_QPS_INIT,
+	};
+	ret = ibv_exp_modify_qp(tmpl.qp, &attr.mod, IBV_EXP_QP_STATE);
+	if (ret) {
+		ERROR("%p: QP state to IBV_QPS_INIT failed: %s",
+		      (void *)dev, strerror(ret));
+		goto error;
+	}
+	ret = txq_setup(&tmpl, txq_ctrl);
+	if (ret) {
+		ERROR("%p: cannot initialize TX queue structure: %s",
+		      (void *)dev, strerror(ret));
+		goto error;
+	}
+	txq_alloc_elts(&tmpl, desc);
+	attr.mod = (struct ibv_exp_qp_attr){
+		.qp_state = IBV_QPS_RTR
+	};
+	ret = ibv_exp_modify_qp(tmpl.qp, &attr.mod, IBV_EXP_QP_STATE);
+	if (ret) {
+		ERROR("%p: QP state to IBV_QPS_RTR failed: %s",
+		      (void *)dev, strerror(ret));
+		goto error;
+	}
+	attr.mod.qp_state = IBV_QPS_RTS;
+	ret = ibv_exp_modify_qp(tmpl.qp, &attr.mod, IBV_EXP_QP_STATE);
+	if (ret) {
+		ERROR("%p: QP state to IBV_QPS_RTS failed: %s",
+		      (void *)dev, strerror(ret));
+		goto error;
+	}
+	/* Clean up txq in case we're reinitializing it. */
+	DEBUG("%p: cleaning-up old txq just in case", (void *)txq_ctrl);
+	txq_cleanup(txq_ctrl);
+	*txq_ctrl = tmpl;
+	DEBUG("%p: txq updated with %p", (void *)txq_ctrl, (void *)&tmpl);
+	/* Pre-register known mempools. */
+	rte_mempool_walk(txq_mp2mr_iter, txq_ctrl);
+	assert(ret == 0);
+	return 0;
+error:
+	txq_cleanup(&tmpl);
+	assert(ret > 0);
+	return ret;
+}
+
+/**
+ * Configure an Ethernet TX queue.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ * @param txq_ctrl
+ *   Pointer to TX queue structure.
+ * @param desc
+ *   Number of descriptors to configure in queue.
+ * @param socket
+ *   NUMA socket on which memory must be allocated.
+ * @param[in] conf
+ *   Thresholds parameters.
+ *
+ * @return
+ *   0 on success, errno value on failure.
+ */
+int
+txq_ctrl_setup_eth(struct rte_eth_dev *dev, struct txq_ctrl *txq_ctrl,
+		   uint16_t desc, unsigned int socket,
+		   const struct rte_eth_txconf *conf)
 {
 	struct priv *priv = mlx5_get_priv(dev);
 	struct txq_ctrl tmpl = {
@@ -485,7 +659,9 @@ mlx5_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 			return -ENOMEM;
 		}
 	}
-	ret = txq_ctrl_setup(dev, txq_ctrl, desc, socket, conf);
+	ret = priv->link_is_ib ?
+		txq_ctrl_setup_ipoib(dev, txq_ctrl, desc, socket, conf) :
+		txq_ctrl_setup_eth(dev, txq_ctrl, desc, socket, conf);
 	if (ret)
 		rte_free(txq_ctrl);
 	else {

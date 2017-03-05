@@ -393,6 +393,7 @@ priv_flow_validate(struct priv *priv,
 		   struct mlx5_flow_action *action)
 {
 	const struct mlx5_flow_items *cur_item = mlx5_flow_items;
+	int link_is_ib = priv->link_is_ib;
 
 	(void)priv;
 	if (attr->group) {
@@ -472,6 +473,8 @@ priv_flow_validate(struct priv *priv,
 		if (actions->type == RTE_FLOW_ACTION_TYPE_VOID) {
 			continue;
 		} else if (actions->type == RTE_FLOW_ACTION_TYPE_DROP) {
+			if (link_is_ib)
+				goto exit_action_not_supported;
 			action->drop = 1;
 		} else if (actions->type == RTE_FLOW_ACTION_TYPE_QUEUE) {
 			const struct rte_flow_action_queue *queue =
@@ -506,6 +509,8 @@ priv_flow_validate(struct priv *priv,
 				actions->conf;
 			uint16_t n;
 
+			if (link_is_ib)
+				goto exit_action_not_supported;
 			if (!rss || !rss->num) {
 				rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ACTION,
@@ -552,6 +557,8 @@ priv_flow_validate(struct priv *priv,
 				(const struct rte_flow_action_mark *)
 				actions->conf;
 
+			if (link_is_ib)
+				goto exit_action_not_supported;
 			if (!mark) {
 				rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ACTION,
@@ -1047,6 +1054,7 @@ priv_flow_create_action_queue(struct priv *priv,
 	unsigned int j;
 	const unsigned int wqs_n = 1 << log2above(action->queues_n);
 	struct ibv_exp_wq *wqs[wqs_n];
+	int link_is_ib = priv->link_is_ib;
 
 	assert(priv->pd);
 	assert(priv->ctx);
@@ -1058,25 +1066,37 @@ priv_flow_create_action_queue(struct priv *priv,
 				   NULL, "cannot allocate flow memory");
 		return NULL;
 	}
-	for (i = 0; i < action->queues_n; ++i) {
+	if (link_is_ib) {
 		struct rxq_ctrl *rxq;
 
-		rxq = container_of((*priv->rxqs)[action->queues[i]],
+		assert(action->queues_n == 1);
+		rxq = container_of((*priv->rxqs)[action->queues[0]],
 				   struct rxq_ctrl, rxq);
-		wqs[i] = rxq->wq;
-		rte_flow->rxqs[i] = &rxq->rxq;
-		++rte_flow->rxqs_n;
-		rxq->rxq.mark |= action->mark;
-	}
-	/* finalise indirection table. */
-	for (j = 0; i < wqs_n; ++i, ++j) {
-		wqs[i] = wqs[j];
-		if (j == action->queues_n)
-			j = 0;
+		rte_flow->rxqs[0] = &rxq->rxq;
+		rte_flow->qp = rxq->rq.qp;
+	} else {
+		for (i = 0; i < action->queues_n; ++i) {
+			struct rxq_ctrl *rxq;
+
+			rxq = container_of((*priv->rxqs)[action->queues[i]],
+					struct rxq_ctrl, rxq);
+			wqs[i] = rxq->rq.wq;
+			rte_flow->rxqs[i] = &rxq->rxq;
+			++rte_flow->rxqs_n;
+			rxq->rxq.mark |= action->mark;
+		}
+		/* finalise indirection table. */
+		for (j = 0; i < wqs_n; ++i, ++j) {
+			wqs[i] = wqs[j];
+			if (j == action->queues_n)
+				j = 0;
+		}
 	}
 	rte_flow->mark = action->mark;
 	rte_flow->ibv_attr = flow->ibv_attr;
 	rte_flow->hash_fields = flow->hash_fields;
+	if (link_is_ib)
+		goto create_flow;
 	rte_flow->ind_table = ibv_exp_create_rwq_ind_table(
 		priv->ctx,
 		&(struct ibv_exp_rwq_ind_table_init_attr){
@@ -1109,6 +1129,7 @@ priv_flow_create_action_queue(struct priv *priv,
 			},
 			.port_num = priv->port,
 		});
+create_flow:
 	if (!rte_flow->qp) {
 		rte_flow_error_set(error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE,
 				   NULL, "cannot allocate QP");
@@ -1126,7 +1147,7 @@ priv_flow_create_action_queue(struct priv *priv,
 	return rte_flow;
 error:
 	assert(rte_flow);
-	if (rte_flow->qp)
+	if (!link_is_ib && rte_flow->qp)
 		ibv_destroy_qp(rte_flow->qp);
 	if (rte_flow->ind_table)
 		ibv_exp_destroy_rwq_ind_table(rte_flow->ind_table);
@@ -1249,13 +1270,12 @@ static void
 priv_flow_destroy(struct priv *priv,
 		  struct rte_flow *flow)
 {
-	(void)priv;
 	LIST_REMOVE(flow, next);
 	if (flow->ibv_flow)
 		claim_zero(ibv_exp_destroy_flow(flow->ibv_flow));
 	if (flow->drop)
 		goto free;
-	if (flow->qp)
+	if (!priv->link_is_ib && flow->qp)
 		claim_zero(ibv_destroy_qp(flow->qp));
 	if (flow->ind_table)
 		claim_zero(ibv_exp_destroy_rwq_ind_table(flow->ind_table));
@@ -1507,7 +1527,8 @@ priv_flow_stop(struct priv *priv)
 		}
 		DEBUG("Flow %p removed", (void *)flow);
 	}
-	priv_flow_delete_drop_queue(priv);
+	if (!priv->link_is_ib)
+		priv_flow_delete_drop_queue(priv);
 }
 
 /**
@@ -1522,10 +1543,11 @@ priv_flow_stop(struct priv *priv)
 int
 priv_flow_start(struct priv *priv)
 {
-	int ret;
+	int ret = 0;
 	struct rte_flow *flow;
 
-	ret = priv_flow_create_drop_queue(priv);
+	if (!priv->link_is_ib)
+		ret = priv_flow_create_drop_queue(priv);
 	if (ret)
 		return -1;
 	for (flow = LIST_FIRST(&priv->flows);

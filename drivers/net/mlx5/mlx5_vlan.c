@@ -159,7 +159,7 @@ priv_vlan_strip_queue_set(struct priv *priv, uint16_t idx, int on)
 		.vlan_offloads = vlan_offloads,
 	};
 
-	err = ibv_exp_modify_wq(rxq_ctrl->wq, &mod);
+	err = ibv_exp_modify_wq(rxq_ctrl->rq.wq, &mod);
 	if (err) {
 		ERROR("%p: failed to modified stripping mode: %s",
 		      (void *)priv, strerror(err));
