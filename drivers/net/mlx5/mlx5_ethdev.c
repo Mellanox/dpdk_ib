@@ -763,7 +763,7 @@ mlx5_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 
 	};
 
-	if (dev->rx_pkt_burst == mlx5_rx_burst)
+	if (dev->rx_pkt_burst == mlx5_rx_burst_eth)
 		return ptypes;
 	return NULL;
 }
@@ -964,7 +964,7 @@ mlx5_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 	int ret = 0;
 	unsigned int i;
 	uint16_t (*rx_func)(void *, struct rte_mbuf **, uint16_t) =
-		mlx5_rx_burst;
+		mlx5_rx_burst_eth;
 	unsigned int max_frame_len;
 	int rehash;
 	int restart = priv->started;
@@ -1647,5 +1647,8 @@ priv_select_tx_function(struct priv *priv)
 void
 priv_select_rx_function(struct priv *priv)
 {
-	priv->dev->rx_pkt_burst = mlx5_rx_burst;
+	if (priv->link_is_ib)
+		priv->dev->rx_pkt_burst = mlx5_rx_burst_ipoib;
+	else
+		priv->dev->rx_pkt_burst = mlx5_rx_burst_eth;
 }

@@ -1955,7 +1955,7 @@ rxq_cq_to_ol_flags(struct rxq *rxq, volatile struct mlx5_cqe *cqe)
  *   Number of packets successfully received (<= pkts_n).
  */
 uint16_t
-mlx5_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
+mlx5_rx_burst_eth(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 {
 	struct rxq *rxq = dpdk_rxq;
 	const unsigned int wqe_cnt = (1 << rxq->elts_n) - 1;
@@ -2064,6 +2064,142 @@ mlx5_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 		 * changes.
 		 */
 		wqe->addr = htonll(rte_pktmbuf_mtod(rep, uintptr_t));
+		if (len > DATA_LEN(seg)) {
+			len -= DATA_LEN(seg);
+			++NB_SEGS(pkt);
+			++rq_ci;
+			continue;
+		}
+		DATA_LEN(seg) = len;
+#ifdef MLX5_PMD_SOFT_COUNTERS
+		/* Increment bytes counter. */
+		rxq->stats.ibytes += PKT_LEN(pkt);
+#endif
+		/* Return packet. */
+		*(pkts++) = pkt;
+		pkt = NULL;
+		--pkts_n;
+		++i;
+skip:
+		/* Align consumer index to the next stride. */
+		rq_ci >>= sges_n;
+		++rq_ci;
+		rq_ci <<= sges_n;
+	}
+	if (unlikely((i == 0) && ((rq_ci >> sges_n) == rxq->rq_ci)))
+		return 0;
+	/* Update the consumer index. */
+	rxq->rq_ci = rq_ci >> sges_n;
+	rte_wmb();
+	*rxq->cq_db = htonl(rxq->cq_ci);
+	rte_wmb();
+	*rxq->rq_db = htonl(rxq->rq_ci);
+#ifdef MLX5_PMD_SOFT_COUNTERS
+	/* Increment packets counter. */
+	rxq->stats.ipackets += i;
+#endif
+	return i;
+}
+
+/**
+ * DPDK callback for RX.
+ *
+ * @param dpdk_rxq
+ *   Generic pointer to RX queue structure.
+ * @param[out] pkts
+ *   Array to store received packets.
+ * @param pkts_n
+ *   Maximum number of packets in array.
+ *
+ * @return
+ *   Number of packets successfully received (<= pkts_n).
+ */
+uint16_t
+mlx5_rx_burst_ipoib(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
+{
+	struct rxq *rxq = dpdk_rxq;
+	const unsigned int wqe_cnt = (1 << rxq->elts_n) - 1;
+	const unsigned int cqe_cnt = (1 << rxq->cqe_n) - 1;
+	const unsigned int sges_n = rxq->sges_n;
+	struct rte_mbuf *pkt = NULL;
+	struct rte_mbuf *seg = NULL;
+	volatile struct mlx5_cqe *cqe =
+		&(*rxq->cqes)[rxq->cq_ci & cqe_cnt];
+	unsigned int i = 0;
+	unsigned int rq_ci = rxq->rq_ci << sges_n;
+	int len; /* keep its value across iterations. */
+
+	while (pkts_n) {
+		unsigned int idx = rq_ci & wqe_cnt;
+		volatile struct mlx5_wqe_data_seg *wqe = &(*rxq->wqes)[idx];
+		struct rte_mbuf *rep = (*rxq->elts)[idx];
+		uint32_t rss_hash_res = 0;
+
+		if (pkt)
+			NEXT(seg) = rep;
+		seg = rep;
+		rte_prefetch0(seg);
+		rte_prefetch0(cqe);
+		rte_prefetch0(wqe);
+		rep = rte_mbuf_raw_alloc(rxq->mp);
+		if (unlikely(rep == NULL)) {
+			++rxq->stats.rx_nombuf;
+			if (!pkt) {
+				/*
+				 * no buffers before we even started,
+				 * bail out silently.
+				 */
+				break;
+			}
+			while (pkt != seg) {
+				assert(pkt != (*rxq->elts)[idx]);
+				rep = NEXT(pkt);
+				NEXT(pkt) = NULL;
+				NB_SEGS(pkt) = 1;
+				rte_mbuf_raw_free(pkt);
+				pkt = rep;
+			}
+			break;
+		}
+		if (!pkt) {
+			cqe = &(*rxq->cqes)[rxq->cq_ci & cqe_cnt];
+			len = mlx5_rx_poll_len(rxq, cqe, cqe_cnt,
+					       &rss_hash_res);
+			if (!len) {
+				rte_mbuf_raw_free(rep);
+				break;
+			}
+			if (unlikely(len == -1)) {
+				/* RX error, packet is likely too large. */
+				rte_mbuf_raw_free(rep);
+				++rxq->stats.idropped;
+				goto skip;
+			}
+			pkt = seg;
+			len -= GRH_HDR_LEN;
+			assert(len >= (rxq->crc_present << 2));
+			/* Update packet information. */
+			pkt->packet_type = 0;
+			pkt->ol_flags = 0;
+			PKT_LEN(pkt) = len;
+		}
+		DATA_LEN(rep) = DATA_LEN(seg);
+		PKT_LEN(rep) = PKT_LEN(seg);
+		SET_DATA_OFF(rep, DATA_OFF(seg));
+		NB_SEGS(rep) = NB_SEGS(seg);
+		PORT(rep) = PORT(seg);
+		NEXT(rep) = NULL;
+		(*rxq->elts)[idx] = rep;
+		/*
+		 * Fill NIC descriptor with the new buffer.  The lkey and size
+		 * of the buffers are already known, only the buffer address
+		 * changes.
+		 * Since HW always preserves a place for the GRH, the wqe
+		 * pointer is set in way that will keep the packet data
+		 * aligned.
+		 */
+		wqe->addr = htonll(rte_pktmbuf_mtod(rep, uintptr_t) -
+				   GRH_HDR_LEN);
 		if (len > DATA_LEN(seg)) {
 			len -= DATA_LEN(seg);
 			++NB_SEGS(pkt);

@@ -647,8 +647,15 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		priv->mps = priv->link_is_ib ? 0 : mps;
 		priv->cqe_comp = 1; /* Enable compression by default. */
 		priv->tunnel_en = tunnel_en;
-		if (priv->link_is_ib)
+		if (priv->link_is_ib) {
 			priv->device_attr.max_qp = 1;
+			if (RTE_PKTMBUF_HEADROOM < GRH_HDR_LEN) {
+				ERROR("when link is IB mbuf headroom must be "
+				      "larger than %u", GRH_HDR_LEN);
+				err = EINVAL;
+				goto port_error;
+			}
+		}
 		err = mlx5_args(&args, pci_dev->device.devargs);
 		if (err) {
 			ERROR("failed to process device arguments: %s",

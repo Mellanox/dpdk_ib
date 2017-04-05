@@ -654,7 +654,10 @@ rxq_alloc_elts(struct rxq_ctrl *rxq_ctrl, unsigned int elts_n,
 	       struct rte_mbuf *(*pool)[])
 {
 	const unsigned int sges_n = 1 << rxq_ctrl->rxq.sges_n;
+	struct priv *priv = rxq_ctrl->priv;
 	unsigned int i;
+	uintptr_t addr;
+	unsigned int length;
 	int ret = 0;
 
 	/* Iterate on segments. */
@@ -689,11 +692,21 @@ rxq_alloc_elts(struct rxq_ctrl *rxq_ctrl, unsigned int elts_n,
 		DATA_LEN(buf) = rte_pktmbuf_tailroom(buf);
 		PKT_LEN(buf) = DATA_LEN(buf);
 		NB_SEGS(buf) = 1;
+		addr = rte_pktmbuf_mtod(buf, uintptr_t);
+		length = DATA_LEN(buf);
+		if (priv->link_is_ib) {
+			/*
+			 * WQE pointers starts from GRH_HDR_LEN below
+			 * the mbuf data ptr.
+			 */
+			addr -= GRH_HDR_LEN;
+			length += GRH_HDR_LEN;
+		}
 		/* scat->addr must be able to store a pointer. */
 		assert(sizeof(scat->addr) >= sizeof(uintptr_t));
 		*scat = (struct mlx5_wqe_data_seg){
-			.addr = htonll(rte_pktmbuf_mtod(buf, uintptr_t)),
-			.byte_count = htonl(DATA_LEN(buf)),
+			.addr = htonll(addr),
+			.byte_count = htonl(length),
 			.lkey = htonl(rxq_ctrl->mr->lkey),
 		};
 		(*rxq_ctrl->rxq.elts)[i] = buf;

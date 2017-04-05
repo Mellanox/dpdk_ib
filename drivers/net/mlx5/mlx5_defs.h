@@ -95,4 +95,7 @@
 /* IPoIB header length. */
 #define IPOIB_HDR_LEN 4
 
+/* GRH header length. */
+#define GRH_HDR_LEN 40
+
 #endif /* RTE_PMD_MLX5_DEFS_H_ */
