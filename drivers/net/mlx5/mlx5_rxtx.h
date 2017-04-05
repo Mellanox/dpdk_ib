@@ -332,7 +332,8 @@ uint16_t mlx5_tx_burst_secondary_setup(void *, struct rte_mbuf **, uint16_t);
 
 /* mlx5_rxtx.c */
 
-uint16_t mlx5_tx_burst(void *, struct rte_mbuf **, uint16_t);
+uint16_t mlx5_tx_burst_eth(void *, struct rte_mbuf **, uint16_t);
+uint16_t mlx5_tx_burst_ipoib(void *, struct rte_mbuf **, uint16_t);
 uint16_t mlx5_tx_burst_mpw(void *, struct rte_mbuf **, uint16_t);
 uint16_t mlx5_tx_burst_mpw_inline(void *, struct rte_mbuf **, uint16_t);
 uint16_t mlx5_tx_burst_empw(void *, struct rte_mbuf **, uint16_t);

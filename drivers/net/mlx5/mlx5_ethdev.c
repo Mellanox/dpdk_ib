@@ -1623,7 +1623,10 @@ error:
 void
 priv_select_tx_function(struct priv *priv)
 {
-	priv->dev->tx_pkt_burst = mlx5_tx_burst;
+	if (priv->link_is_ib)
+		priv->dev->tx_pkt_burst = mlx5_tx_burst_ipoib;
+	else
+		priv->dev->tx_pkt_burst = mlx5_tx_burst_eth;
 	/* Select appropriate TX function. */
 	if (priv->mps == MLX5_MPW_ENHANCED) {
 		priv->dev->tx_pkt_burst =
