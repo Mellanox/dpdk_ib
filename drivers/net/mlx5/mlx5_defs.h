@@ -98,4 +98,7 @@
 /* GRH header length. */
 #define GRH_HDR_LEN 40
 
+/* IPoIB Queue Key. */
+#define IPOIB_DEFAULT_QKEY 0xb1b
+
 #endif /* RTE_PMD_MLX5_DEFS_H_ */

@@ -414,6 +414,8 @@ mlx5_args_assign(struct priv *priv, struct mlx5_args *args)
 static void
 adjust_dev_ops_ipoib(void)
 {
+	mlx5_dev_ops.ib_av_get = mlx5_ib_av_get;
+	mlx5_dev_ops.ib_av_translate = mlx5_ib_av_translate;
 	mlx5_dev_ops.promiscuous_enable = NULL;
 	mlx5_dev_ops.promiscuous_disable = NULL;
 	mlx5_dev_ops.allmulticast_enable = NULL;

@@ -228,6 +228,9 @@ int mlx5_set_link_up(struct rte_eth_dev *dev);
 struct priv *mlx5_secondary_data_setup(struct priv *priv);
 void priv_select_tx_function(struct priv *);
 void priv_select_rx_function(struct priv *);
+int mlx5_ib_av_get(struct rte_eth_dev *dev, struct rte_eth_ib_av *av);
+int mlx5_ib_av_translate(struct rte_eth_dev *dev, struct rte_eth_ib_av *av,
+			 unsigned int *size);
 
 /* mlx5_mac.c */
 
