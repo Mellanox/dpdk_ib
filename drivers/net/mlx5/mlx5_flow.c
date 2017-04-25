@@ -160,7 +160,8 @@ static const enum rte_flow_action_type valid_actions[] = {
 static const struct mlx5_flow_items mlx5_flow_items[] = {
 	[RTE_FLOW_ITEM_TYPE_END] = {
 		.items = ITEMS(RTE_FLOW_ITEM_TYPE_ETH,
-			       RTE_FLOW_ITEM_TYPE_VXLAN),
+			       RTE_FLOW_ITEM_TYPE_VXLAN,
+			       RTE_FLOW_ITEM_TYPE_IPV4),
 	},
 	[RTE_FLOW_ITEM_TYPE_ETH] = {
 		.items = ITEMS(RTE_FLOW_ITEM_TYPE_VLAN,
