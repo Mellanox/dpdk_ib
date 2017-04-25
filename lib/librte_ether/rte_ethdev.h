@@ -1322,6 +1322,16 @@ typedef int (*eth_udp_tunnel_port_add_t)(struct rte_eth_dev *dev,
 
 typedef int (*eth_udp_tunnel_port_del_t)(struct rte_eth_dev *dev,
 					 struct rte_eth_udp_tunnel *tunnel_udp);
+/**< @internal Get IB local address vector */
+
+typedef int (*ib_av_get_t)(struct rte_eth_dev *dev,
+			   struct rte_eth_ib_av *av);
+
+/**< @internal Translate IB local address vector to PMD specific AV */
+
+typedef int (*ib_av_translate_t)(struct rte_eth_dev *dev,
+				 struct rte_eth_ib_av *av, unsigned int *size);
+
 /**< @internal Delete tunneling UDP port */
 
 typedef int (*eth_set_mc_addr_list_t)(struct rte_eth_dev *dev,
@@ -1523,6 +1533,9 @@ struct eth_dev_ops {
 
 	eth_udp_tunnel_port_add_t  udp_tunnel_port_add; /** Add UDP tunnel port. */
 	eth_udp_tunnel_port_del_t  udp_tunnel_port_del; /** Del UDP tunnel port. */
+	ib_av_get_t		   ib_av_get; /** Get Inifinband local AV. */
+	/** Translate IB AV to PMD specific struct. */
+	ib_av_translate_t	   ib_av_translate;
 	eth_l2_tunnel_eth_type_conf_t l2_tunnel_eth_type_conf;
 	/** Config ether type of l2 tunnel. */
 	eth_l2_tunnel_offload_set_t   l2_tunnel_offload_set;
@@ -4606,6 +4619,13 @@ rte_eth_dev_get_port_by_name(const char *name, uint8_t *port_id);
 */
 int
 rte_eth_dev_get_name_by_port(uint8_t port_id, char *name);
+
+int
+rte_eth_dev_get_local_ib_av(uint8_t port_id, struct rte_eth_ib_av *av);
+
+int
+rte_eth_dev_translate_ib_av(uint8_t port_id, struct rte_eth_ib_av *av,
+			    unsigned int *size);
 
 #ifdef __cplusplus
 }
