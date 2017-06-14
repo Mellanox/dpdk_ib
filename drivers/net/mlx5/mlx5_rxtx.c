@@ -899,6 +899,7 @@ mlx5_tx_burst_ipoib(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 	const unsigned int elts_n = 1 << txq->elts_n;
 	unsigned int i = 0;
 	unsigned int j = 0;
+	unsigned int k = 0;
 	unsigned int max;
 	uint16_t max_wqe;
 	unsigned int comp;
@@ -908,6 +909,9 @@ mlx5_tx_burst_ipoib(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 	struct rte_mbuf *buf = NULL;
 	struct mlx5_wqe_eth_seg_small padding_seg = {0};
 	uint8_t *raw;
+	const uintptr_t wq_end = (uintptr_t)(((uintptr_t)txq->wqes) +
+					     (1 << txq->wqe_n) *
+					     MLX5_WQE_SIZE);
 
 	if (unlikely(!pkts_n))
 		return 0;
@@ -947,10 +951,26 @@ mlx5_tx_burst_ipoib(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 			break;
 		max -= segs_n;
 		--segs_n;
-		if (unlikely(--max_wqe == 0))
+		/* Each IPoIB WQE is at least 2 MLX5 WQEs. */
+		max_wqe -= 2;
+		if (unlikely(max_wqe <= 0))
 			break;
 		wqe = (volatile struct mlx5_wqe_ipoib_v *)
 			tx_mlx5_wqe(txq, txq->wqe_ci);
+		if ((uintptr_t)(wqe + 1) >= wq_end) {
+			/* NOP WQE. */
+			wqe->ctrl = (rte_v128u32_t){
+				     htonl(txq->wqe_ci << 8),
+				     htonl(txq->qp_num_8s | 1),
+				     0,
+				     0,
+			};
+			ds = 1;
+			total_length = 0;
+			k++;
+			max_wqe++;
+			goto next_wqe;
+		}
 		rte_prefetch0(tx_mlx5_wqe(txq, txq->wqe_ci + 1));
 		if (pkts_n - i > 1)
 			rte_prefetch0(*(pkts + 1));
@@ -990,9 +1010,6 @@ mlx5_tx_burst_ipoib(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 			cs_flags = MLX5_ETH_WQE_L3_CSUM | MLX5_ETH_WQE_L4_CSUM;
 		/* Inline if enough room. */
 		if (txq->inline_en) {
-			uintptr_t end = (uintptr_t)
-				(((uintptr_t)txq->wqes) +
-				 (1 << txq->wqe_n) * MLX5_WQE_SIZE);
 			unsigned int max_inline = txq->max_inline *
 						  RTE_CACHE_LINE_SIZE -
 						  (pkt_inline_sz - 2);
@@ -1003,7 +1020,7 @@ mlx5_tx_burst_ipoib(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 				0;
 
 			raw += MLX5_WQE_DWORD_SIZE;
-			if (copy_b && ((end - (uintptr_t)raw) > copy_b)) {
+			if (copy_b && ((wq_end - (uintptr_t)raw) > copy_b)) {
 				/*
 				 * One Dseg remains in the current WQE.  To
 				 * keep the computation positive, it is
@@ -1129,6 +1146,7 @@ next_pkt:
 			0,
 			(ipoib_hdr << 16) | htons(pkt_inline_sz),
 		};
+next_wqe:
 		txq->wqe_ci += (ds + 3) / 4;
 		/* Save the last successful WQE for completion request */
 		last_wqe = (volatile struct mlx5_wqe_ctrl *)wqe;
@@ -1138,11 +1156,11 @@ next_pkt:
 #endif
 	} while (i < pkts_n);
 	/* Take a shortcut if nothing must be sent. */
-	if (unlikely(i == 0))
+	if (unlikely((i + k) == 0))
 		return 0;
 	txq->elts_head = (txq->elts_head + i + j) & (elts_n - 1);
 	/* Check whether completion threshold has been reached. */
-	comp = txq->elts_comp + i + j;
+	comp = txq->elts_comp + i + j + k;
 	if (comp >= MLX5_TX_COMP_THRESH) {
 		/* Request completion on last WQE. */
 		last_wqe->ctrl2 = htonl(8);
