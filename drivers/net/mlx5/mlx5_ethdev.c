@@ -716,7 +716,10 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	/* If max >= 65535 then max = 0, max_rx_queues is uint16_t. */
 	if (max >= 65535)
 		max = 65535;
-	info->max_rx_queues = max;
+	if (priv->link_is_ib)
+		info->max_rx_queues = 1;
+	else
+		info->max_rx_queues = max;
 	info->max_tx_queues = max;
 	info->max_mac_addrs = RTE_DIM(priv->mac);
 	info->rx_offload_capa =
