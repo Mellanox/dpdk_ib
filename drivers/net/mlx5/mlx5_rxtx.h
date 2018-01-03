@@ -120,6 +120,7 @@ struct rxq {
 	volatile uint32_t *cq_db;
 	uint16_t rq_ci;
 	uint16_t cq_ci;
+	uint16_t refill_count;
 	volatile struct mlx5_wqe_data_seg(*wqes)[];
 	volatile struct mlx5_cqe(*cqes)[];
 	struct rxq_zip zip; /* Compressed context. */
@@ -338,7 +339,9 @@ uint16_t mlx5_tx_burst_mpw(void *, struct rte_mbuf **, uint16_t);
 uint16_t mlx5_tx_burst_mpw_inline(void *, struct rte_mbuf **, uint16_t);
 uint16_t mlx5_tx_burst_empw(void *, struct rte_mbuf **, uint16_t);
 uint16_t mlx5_rx_burst_eth(void *, struct rte_mbuf **, uint16_t);
+uint16_t mlx5_rx_burst_eth_no_sges(void *, struct rte_mbuf **, uint16_t);
 uint16_t mlx5_rx_burst_ipoib(void *, struct rte_mbuf **, uint16_t);
+uint16_t mlx5_rx_burst_ipoib_no_sges(void *, struct rte_mbuf **, uint16_t);
 uint16_t removed_tx_burst(void *, struct rte_mbuf **, uint16_t);
 uint16_t removed_rx_burst(void *, struct rte_mbuf **, uint16_t);
 int mlx5_rx_descriptor_status(void *, uint16_t);

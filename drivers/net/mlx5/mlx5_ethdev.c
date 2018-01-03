@@ -1653,10 +1653,36 @@ priv_select_tx_function(struct priv *priv)
 void
 priv_select_rx_function(struct priv *priv)
 {
-	if (priv->link_is_ib)
-		priv->dev->rx_pkt_burst = mlx5_rx_burst_ipoib;
-	else
-		priv->dev->rx_pkt_burst = mlx5_rx_burst_eth;
+	if (priv->dev->data->dev_conf.rxmode.enable_scatter) {
+		/*
+		 * XXX: we should also check `dev->data->dev_conf.rxmode.max_rx_pkt_len <= (mb_len - RTE_PKTMBUF_HEADROOM)`
+		 * but we don't have access to the rxq here (which we need for the mempool), so we only use device-wide parameters
+		 * (see logic in `rxq_ctrl_setup_eth`)
+		 *
+		 * In DPDK 17.11 they use a different logic which we did not backport
+		 */
+		if (priv->link_is_ib) {
+			priv->dev->rx_pkt_burst = mlx5_rx_burst_ipoib;
+			RTE_LOG(INFO, PMD, "rx_function is mlx5_rx_burst_ipoib");
+		}
+		else {
+			priv->dev->rx_pkt_burst = mlx5_rx_burst_eth;
+			RTE_LOG(INFO, PMD, "rx_function is mlx5_rx_burst_eth");
+		}
+	}
+	else {
+		/*
+		 * no_sges version
+		 */
+		if (priv->link_is_ib) {
+			priv->dev->rx_pkt_burst = mlx5_rx_burst_ipoib_no_sges;
+			RTE_LOG(INFO, PMD, "rx_function is mlx5_rx_burst_ipoib_no_sges");
+		}
+		else {
+			priv->dev->rx_pkt_burst = mlx5_rx_burst_eth_no_sges;
+			RTE_LOG(INFO, PMD, "rx_function is mlx5_rx_burst_eth_no_sges");
+		}
+	}
 }
 
 /**

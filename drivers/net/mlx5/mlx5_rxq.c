@@ -904,6 +904,7 @@ rxq_setup(struct rxq_ctrl *tmpl)
 	tmpl->rxq.cqe_n = log2above(ibcq->cqe);
 	tmpl->rxq.cq_ci = 0;
 	tmpl->rxq.rq_ci = 0;
+	tmpl->rxq.refill_count = 0;
 	tmpl->rxq.cq_db = cq->dbrec;
 	tmpl->rxq.cqes =
 		(volatile struct mlx5_cqe (*)[])

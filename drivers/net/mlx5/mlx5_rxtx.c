@@ -35,6 +35,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <rte_log.h>
 
 /* Verbs header. */
 /* ISO C doesn't support unnamed structs/unions, disabling -pedantic. */
@@ -2242,6 +2243,48 @@ rxq_cq_to_ol_flags(struct rxq *rxq, volatile struct mlx5_cqe *cqe)
 	return ol_flags;
 }
 
+#define MLX5_VPMD_RXQ_RPLNSH_THRESH  (64U)
+
+/**
+ * Replenish buffers for RX in bulk.
+ *
+ * @param rxq
+ *   Pointer to RX queue structure.
+ * @param data_offset_adjust
+ *   Adjustment for the data address (different for ETH vs IPoIB)
+ */
+static inline void
+mlx5_rx_replenish_bulk_mbuf(struct rxq *rxq, signed int data_offset_adjust) {
+	const uint16_t q_n = 1 << rxq->elts_n;
+	const uint16_t q_mask = q_n - 1;
+	uint16_t elts_idx = rxq->rq_ci & q_mask;
+	unsigned int i;
+
+	assert(rxq->refill_count >= MLX5_VPMD_RXQ_RPLNSH_THRESH);
+
+	while (rxq->refill_count > 0) {
+		struct rte_mbuf **elts = &(*rxq->elts)[elts_idx];
+		volatile struct mlx5_wqe_data_seg *wq = &(*rxq->wqes)[elts_idx];
+		/* Not to cross queue end. */
+		uint16_t batch_size = RTE_MIN(rxq->refill_count, q_n - elts_idx);
+
+		if (rte_mempool_get_bulk(rxq->mp, (void *) elts, batch_size) < 0) {
+			rxq->stats.rx_nombuf += rxq->refill_count;
+			return;
+		}
+		for (i = 0; i < batch_size; ++i) {
+			wq[i].addr = rte_cpu_to_be_64((uintptr_t)elts[i] +
+					sizeof(struct rte_mbuf) + RTE_PKTMBUF_HEADROOM + data_offset_adjust);
+		}
+		rxq->rq_ci += batch_size;
+		rxq->refill_count -= batch_size;
+		/* Prevent overflowing into consumed mbufs. */
+		elts_idx = rxq->rq_ci & q_mask;
+		rte_io_wmb();
+		*rxq->rq_db = rte_cpu_to_be_32(rxq->rq_ci);
+	}
+}
+
 /**
  * DPDK callback for RX.
  *
@@ -2402,6 +2445,142 @@ skip:
 	return i;
 }
 
+
+/**
+ * DPDK callback for RX.
+ *
+ * @param dpdk_rxq
+ *   Generic pointer to RX queue structure.
+ * @param[out] pkts
+ *   Array to store received packets.
+ * @param pkts_n
+ *   Maximum number of packets in array.
+ *
+ * @return
+ *   Number of packets successfully received (<= pkts_n).
+ */
+uint16_t
+mlx5_rx_burst_eth_no_sges(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
+{
+	assert (rxq->sges_n == 0);
+
+	struct rxq *rxq = dpdk_rxq;
+	const unsigned int wqe_cnt = (1 << rxq->elts_n) - 1;
+	const unsigned int cqe_cnt = (1 << rxq->cqe_n) - 1;
+	struct rte_mbuf *seg = NULL;
+	volatile struct mlx5_cqe *cqe =
+		&(*rxq->cqes)[rxq->cq_ci & cqe_cnt];
+	unsigned int i = 0;
+	unsigned int rq_ci = (rxq->rq_ci) + rxq->refill_count;
+	unsigned int first_idx = rq_ci & wqe_cnt;
+	const unsigned char port = rxq->port_id;
+	int len = 0; /* keep its value across iterations. */
+
+	rte_prefetch0(cqe);
+	rte_prefetch0(cqe+1);
+	rte_prefetch0(cqe+2);
+	/* prefetch the next cache line (no point in prefetching the current) */
+	rte_prefetch0(&(*rxq->elts)[(first_idx + (64/sizeof(struct rte_mbuf *))) & wqe_cnt]);
+
+	while (pkts_n) {
+		unsigned int idx = rq_ci & wqe_cnt;
+		struct rte_mbuf *rep = (*rxq->elts)[idx];
+		unsigned int next_idx = (idx + 1) & wqe_cnt;
+		uint32_t rss_hash_res = 0;
+		cqe = &(*rxq->cqes)[rxq->cq_ci & cqe_cnt];
+
+		if ((idx & 4) == 0) {
+			struct rte_mbuf **next_mbufs_cache_line = &(*rxq->elts)[(idx + (64/sizeof(struct rte_mbuf *))) & wqe_cnt];
+			/* we start a new cache line, prefetch the next one */
+			rte_prefetch0(next_mbufs_cache_line);
+		}
+		/*  we're allowed to prefetch invalid addresses */
+		rte_prefetch0(cqe+3);
+		/* prefetch the next mbuf header */
+		rte_prefetch0((*rxq->elts)[next_idx]);
+		seg = rep;
+		len = mlx5_rx_poll_len(rxq, cqe, cqe_cnt, &rss_hash_res);
+		if (!len) {
+			break;
+		}
+		if (unlikely(len == -1)) {
+			RTE_LOG(ERR, PMD, "PMD: len is -1\n");
+			/* RX error, packet is likely too large. */
+			++rxq->stats.idropped;
+			goto skip;
+		}
+
+		struct rte_mbuf *pkt = seg;
+		assert(len >= (rxq->crc_present << 2));
+
+		/* Update packet information. */
+		SET_DATA_OFF(pkt, RTE_PKTMBUF_HEADROOM);
+		NB_SEGS(pkt) = 1;
+		PORT(pkt) = port;
+		NEXT(pkt) = NULL;
+		pkt->packet_type = 0;
+		pkt->ol_flags = 0;
+
+		if (rss_hash_res && rxq->rss_hash) {
+			pkt->hash.rss = rss_hash_res;
+			pkt->ol_flags = PKT_RX_RSS_HASH;
+		}
+		if (rxq->mark &&
+			MLX5_FLOW_MARK_IS_VALID(cqe->sop_drop_qpn)) {
+			pkt->ol_flags |= PKT_RX_FDIR;
+			if (cqe->sop_drop_qpn !=
+				htonl(MLX5_FLOW_MARK_DEFAULT)) {
+				uint32_t mark = cqe->sop_drop_qpn;
+
+				pkt->ol_flags |= PKT_RX_FDIR_ID;
+				pkt->hash.fdir.hi =
+					mlx5_flow_mark_get(mark);
+			}
+		}
+		if (rxq->csum | rxq->csum_l2tun) {
+			pkt->packet_type = rxq_cq_to_pkt_type(cqe);
+			pkt->ol_flags |= rxq_cq_to_ol_flags(rxq, cqe);
+		}
+		if (rxq->vlan_strip &&
+			(cqe->hdr_type_etc &
+			 htons(MLX5_CQE_VLAN_STRIPPED))) {
+			pkt->ol_flags |= PKT_RX_VLAN_PKT |
+				PKT_RX_VLAN_STRIPPED;
+			pkt->vlan_tci = ntohs(cqe->vlan_info);
+		}
+		if (rxq->crc_present)
+			len -= ETHER_CRC_LEN;
+
+		/* sges_n == 0 so these two are equal */
+		PKT_LEN(pkt) = len;
+		DATA_LEN(pkt) = len;
+#ifdef MLX5_PMD_SOFT_COUNTERS
+		/* Increment bytes counter. */
+		rxq->stats.ibytes += PKT_LEN(pkt);
+#endif
+		/* Return packet. */
+		*(pkts++) = pkt;
+		--pkts_n;
+		++i;
+skip:
+		/* Align consumer index to the next stride. */
+		++rq_ci;
+	}
+	if (unlikely((i == 0) && (rq_ci == rxq->rq_ci)))
+		return 0;
+	rxq->refill_count += i;
+	if (rxq->refill_count >= MLX5_VPMD_RXQ_RPLNSH_THRESH) {
+		mlx5_rx_replenish_bulk_mbuf(rxq, 0);
+	}
+	rte_compiler_barrier();
+	*rxq->cq_db = rte_cpu_to_be_32(rxq->cq_ci);
+#ifdef MLX5_PMD_SOFT_COUNTERS
+	/* Increment packets counter. */
+	rxq->stats.ipackets += i;
+#endif
+	return i;
+}
+
 /**
  * DPDK callback for RX.
  *
@@ -2531,6 +2710,114 @@ skip:
 	*rxq->cq_db = htonl(rxq->cq_ci);
 	rte_wmb();
 	*rxq->rq_db = htonl(rxq->rq_ci);
+#ifdef MLX5_PMD_SOFT_COUNTERS
+	/* Increment packets counter. */
+	rxq->stats.ipackets += i;
+#endif
+	return i;
+}
+
+/**
+ * DPDK callback for RX.
+ *
+ * @param dpdk_rxq
+ *   Generic pointer to RX queue structure.
+ * @param[out] pkts
+ *   Array to store received packets.
+ * @param pkts_n
+ *   Maximum number of packets in array.
+ *
+ * @return
+ *   Number of packets successfully received (<= pkts_n).
+ */
+uint16_t
+mlx5_rx_burst_ipoib_no_sges(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n) {
+	assert(rxq->sges_n == 0);
+
+	struct rxq *rxq = dpdk_rxq;
+	const unsigned int wqe_cnt = (1 << rxq->elts_n) - 1;
+	const unsigned int cqe_cnt = (1 << rxq->cqe_n) - 1;
+	struct rte_mbuf *seg = NULL;
+	volatile struct mlx5_cqe *cqe = &(*rxq->cqes)[rxq->cq_ci & cqe_cnt];
+	unsigned int i = 0;
+	unsigned int rq_ci = (rxq->rq_ci) + rxq->refill_count;
+	unsigned int first_idx = rq_ci & wqe_cnt;
+	const unsigned char port = rxq->port_id;
+	int len = 0; /* keep its value across iterations. */
+
+	rte_prefetch0(cqe);
+	/* prefetch the next cache line (no point in prefetching the current) */
+	rte_prefetch0(&(*rxq->elts)[(first_idx + (64 / sizeof(struct rte_mbuf *))) & wqe_cnt]);
+
+	while (pkts_n) {
+		unsigned int idx = rq_ci & wqe_cnt;
+		struct rte_mbuf *rep = (*rxq->elts)[idx];
+		unsigned int next_idx = (idx + 1) & wqe_cnt;
+		uint32_t rss_hash_res = 0;
+
+		if ((idx & 4) == 0) {
+			struct rte_mbuf **next_mbufs_cache_line = &(*rxq->elts)[(idx
+			        + (64 / sizeof(struct rte_mbuf *))) & wqe_cnt];
+			/* we start a new cache line, prefetch the next one */
+			rte_prefetch0(next_mbufs_cache_line);
+		}
+		/* prefetch the next mbuf header */
+		rte_prefetch0((*rxq->elts)[next_idx]);
+
+		seg = rep;
+		cqe = &(*rxq->cqes)[rxq->cq_ci & cqe_cnt];
+		len = mlx5_rx_poll_len(rxq, cqe, cqe_cnt, &rss_hash_res);
+		volatile struct mlx5_cqe *next_cqe = &(*rxq->cqes)[rxq->cq_ci & cqe_cnt];
+		rte_prefetch0(next_cqe);
+		if (!len) {
+			break;
+		}
+		if (unlikely(len == -1)) {
+			RTE_LOG(ERR, PMD, "PMD: len is -1\n");
+			/* RX error, packet is likely too large. */
+			rte_mbuf_raw_free(rep);
+			++rxq->stats.idropped;
+			goto skip;
+		}
+
+		struct rte_mbuf *pkt = seg;
+		len -= GRH_HDR_LEN;
+		assert(len >= (rxq->crc_present << 2));
+
+		/* Update packet information. */
+		pkt->packet_type = 0;
+		pkt->ol_flags = 0;
+		PORT(pkt) = port;
+		PKT_LEN(pkt) = len;
+		DATA_LEN(pkt) = len;
+#ifdef MLX5_PMD_SOFT_COUNTERS
+		/* Increment bytes counter. */
+		rxq->stats.ibytes += PKT_LEN(pkt);
+#endif
+		/* Return packet. */
+		*(pkts++) = pkt;
+		--pkts_n;
+		++i;
+skip:
+		/* Align consumer index to the next stride. */
+		++rq_ci;
+	}
+	if (unlikely((i == 0) && (rq_ci == rxq->rq_ci)))
+		return 0;
+	rxq->refill_count += i;
+	if (rxq->refill_count >= MLX5_VPMD_RXQ_RPLNSH_THRESH) {
+		/*
+		 * Fill NIC descriptor with the new buffer.  The lkey and size
+		 * of the buffers are already known, only the buffer address
+		 * changes.
+		 * Since HW always preserves a place for the GRH, the wqe
+		 * pointer is set in way that will keep the packet data
+		 * aligned.
+		 */
+		mlx5_rx_replenish_bulk_mbuf(rxq, -GRH_HDR_LEN);
+	}
+	rte_compiler_barrier();
+	*rxq->cq_db = rte_cpu_to_be_32(rxq->cq_ci);
 #ifdef MLX5_PMD_SOFT_COUNTERS
 	/* Increment packets counter. */
 	rxq->stats.ipackets += i;
