@@ -2462,9 +2462,8 @@ skip:
 uint16_t
 mlx5_rx_burst_eth_no_sges(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 {
-	assert (rxq->sges_n == 0);
-
 	struct rxq *rxq = dpdk_rxq;
+	assert (rxq->sges_n == 0);
 	const unsigned int wqe_cnt = (1 << rxq->elts_n) - 1;
 	const unsigned int cqe_cnt = (1 << rxq->cqe_n) - 1;
 	struct rte_mbuf *seg = NULL;
@@ -2732,9 +2731,8 @@ skip:
  */
 uint16_t
 mlx5_rx_burst_ipoib_no_sges(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n) {
-	assert(rxq->sges_n == 0);
-
 	struct rxq *rxq = dpdk_rxq;
+	assert(rxq->sges_n == 0);
 	const unsigned int wqe_cnt = (1 << rxq->elts_n) - 1;
 	const unsigned int cqe_cnt = (1 << rxq->cqe_n) - 1;
 	struct rte_mbuf *seg = NULL;
