@@ -44,16 +44,37 @@
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
-mlx5_get_mac(struct rte_eth_dev *dev, uint8_t (*mac)[ETHER_ADDR_LEN])
+mlx5_get_mac(struct rte_eth_dev *dev, uint8_t *mac)
 {
 	struct ifreq request;
 	int ret;
+	struct priv *priv = dev->data->dev_private;
+	unsigned int addr_len = priv->link_is_ib ? IPOIB_ADDR_LEN :
+			ETHER_ADDR_LEN;
 
 	ret = mlx5_ifreq(dev, SIOCGIFHWADDR, &request);
 	if (ret)
 		return ret;
-	memcpy(mac, request.ifr_hwaddr.sa_data, ETHER_ADDR_LEN);
+	memcpy(mac, request.ifr_hwaddr.sa_data, addr_len);
 	return 0;
+}
+
+/**
+ * Translate IPoIB HW address to Verbs QP number.
+ *
+ * @param[in] ipoib_addr
+ *   Byte field of IPoIB HW addr.
+ * @param[out] qp_num
+ *   Pointer to verbs QP number.
+ */
+void
+mlx5_ipoib_addr_to_qp_num(uint8_t *ipoib_addr, uint32_t *qp_num)
+{
+	uint8_t *qp_num_bytes = (uint8_t *)qp_num;
+
+	qp_num_bytes[0] = ipoib_addr[3];
+	qp_num_bytes[1] = ipoib_addr[2];
+	qp_num_bytes[2] = ipoib_addr[1];
 }
 
 /**

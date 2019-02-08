@@ -354,7 +354,7 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	dev->data->mac_addrs = NULL;
 }
 
-const struct eth_dev_ops mlx5_dev_ops = {
+struct eth_dev_ops mlx5_dev_ops = {
 	.dev_configure = mlx5_dev_configure,
 	.dev_start = mlx5_dev_start,
 	.dev_stop = mlx5_dev_stop,
@@ -452,6 +452,31 @@ const struct eth_dev_ops mlx5_dev_ops_isolate = {
 	.rx_queue_intr_disable = mlx5_rx_intr_disable,
 	.is_removed = mlx5_is_removed,
 };
+
+/**
+ * Set the operations supported for IB link.
+ */
+static void
+adjust_dev_ops_ipoib(void)
+{
+	mlx5_dev_ops.promiscuous_enable = NULL;
+	mlx5_dev_ops.promiscuous_disable = NULL;
+	mlx5_dev_ops.allmulticast_enable = NULL;
+	mlx5_dev_ops.allmulticast_disable = NULL;
+	mlx5_dev_ops.vlan_filter_set = NULL;
+	mlx5_dev_ops.allmulticast_disable = NULL;
+	mlx5_dev_ops.flow_ctrl_get = NULL;
+	mlx5_dev_ops.flow_ctrl_set = NULL;
+	mlx5_dev_ops.mac_addr_remove = NULL;
+	mlx5_dev_ops.mac_addr_add = NULL;
+	mlx5_dev_ops.mac_addr_set = NULL;
+	mlx5_dev_ops.mtu_set = NULL;
+	mlx5_dev_ops.vlan_strip_queue_set = NULL;
+	mlx5_dev_ops.vlan_offload_set = NULL;
+	mlx5_dev_ops.reta_update = NULL;
+	mlx5_dev_ops.reta_query = NULL;
+	mlx5_dev_ops.rss_hash_update = NULL;
+}
 
 /**
  * Verify and store value for device argument.
@@ -751,6 +776,7 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	int own_domain_id = 0;
 	uint16_t port_id;
 	unsigned int i;
+	uint16_t link_layer = 0;
 
 	/* Determine if this port representor is supposed to be spawned. */
 	if (switch_info->representor && dpdk_dev->devargs) {
@@ -938,11 +964,19 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		DRV_LOG(ERR, "port query failed: %s", strerror(err));
 		goto error;
 	}
-	if (port_attr.link_layer != IBV_LINK_LAYER_ETHERNET) {
-		DRV_LOG(ERR, "port is not configured in Ethernet mode");
+
+	if ((port_attr.link_layer != IBV_LINK_LAYER_ETHERNET) &&
+		(port_attr.link_layer != IBV_LINK_LAYER_INFINIBAND)) {
+		DRV_LOG(ERR, "port is not configured in Ethernet or "
+			"Infiniband mode");
 		err = EINVAL;
 		goto error;
 	}
+
+	link_layer = port_attr.link_layer;
+	DRV_LOG(DEBUG, "port link is %s",
+			link_layer == IBV_LINK_LAYER_ETHERNET ?
+			"Ethernet" : "Infiniband");
 	if (port_attr.state != IBV_PORT_ACTIVE)
 		DRV_LOG(DEBUG, "port is not active: \"%s\" (%d)",
 			mlx5_glue->port_state_str(port_attr.state),
@@ -969,7 +1003,8 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		sizeof(priv->ibdev_path));
 	priv->device_attr = attr;
 	priv->pd = pd;
-	priv->mtu = ETHER_MTU;
+	priv->link_is_ib = (link_layer == IBV_LINK_LAYER_INFINIBAND);
+	priv->mtu = priv->link_is_ib ? 0 : ETHER_MTU;
 #ifndef RTE_ARCH_64
 	/* Initialize UAR access locks for 32bit implementations. */
 	rte_spinlock_init(&priv->uar_lock_cq);
@@ -1058,9 +1093,15 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 #endif
 	DRV_LOG(DEBUG, "hardware Rx end alignment padding is %ssupported",
 		(config.hw_padding ? "" : "not "));
-	config.tso = (attr.tso_caps.max_tso > 0 &&
-		      (attr.tso_caps.supported_qpts &
-		       (1 << IBV_QPT_RAW_PACKET)));
+	if (priv->link_is_ib) {
+		config.tso = ((attr.tso_caps.max_tso > 0) &&
+				(attr.tso_caps.supported_qpts &
+				(1 << IBV_QPT_UD)));
+	} else {
+		config.tso = ((attr.tso_caps.max_tso > 0) &&
+				(attr.tso_caps.supported_qpts &
+				(1 << IBV_QPT_RAW_PACKET)));
+	}
 	if (config.tso)
 		config.tso_max_payload_sz = attr.tso_caps.max_tso;
 	/*
@@ -1072,6 +1113,7 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 							  MLX5_MPW_DISABLED;
 	else
 		config.mps = config.mps ? mps : MLX5_MPW_DISABLED;
+	config.mps = priv->link_is_ib ? 0 : config.mps;
 	DRV_LOG(INFO, "%sMPS is %s",
 		config.mps == MLX5_MPW_ENHANCED ? "enhanced " : "",
 		config.mps != MLX5_MPW_DISABLED ? "enabled" : "disabled");
@@ -1085,6 +1127,7 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	} else if (config.cqe_pad) {
 		DRV_LOG(INFO, "Rx CQE padding is enabled");
 	}
+	mprq = priv->link_is_ib ? 0 : mprq;
 	if (config.mprq.enabled && mprq) {
 		if (config.mprq.stride_num_n > mprq_max_stride_num_n ||
 		    config.mprq.stride_num_n < mprq_min_stride_num_n) {
@@ -1124,21 +1167,25 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		err = rte_errno;
 		goto error;
 	}
-	/* Configure the first MAC address by default. */
-	if (mlx5_get_mac(eth_dev, &mac.addr_bytes)) {
-		DRV_LOG(ERR,
-			"port %u cannot get MAC address, is mlx5_en"
-			" loaded? (errno: %s)",
-			eth_dev->data->port_id, strerror(rte_errno));
-		err = ENODEV;
-		goto error;
+	if (!priv->link_is_ib) {
+		/* Configure the first MAC address by default. */
+		if (mlx5_get_mac(eth_dev, (uint8_t *) &mac.addr_bytes)) {
+			DRV_LOG(ERR,
+				"port %u cannot get MAC address, is mlx5_en"
+				" loaded? (errno: %s)",
+				eth_dev->data->port_id, strerror(rte_errno));
+			err = ENODEV;
+			goto error;
+		}
+		DRV_LOG(INFO,
+			"port %u MAC address is %02x:%02x:%02x:%02x:%02x:%02x",
+			eth_dev->data->port_id,
+			mac.addr_bytes[0], mac.addr_bytes[1],
+			mac.addr_bytes[2], mac.addr_bytes[3],
+			mac.addr_bytes[4], mac.addr_bytes[5]);
+	} else {
+		adjust_dev_ops_ipoib();
 	}
-	DRV_LOG(INFO,
-		"port %u MAC address is %02x:%02x:%02x:%02x:%02x:%02x",
-		eth_dev->data->port_id,
-		mac.addr_bytes[0], mac.addr_bytes[1],
-		mac.addr_bytes[2], mac.addr_bytes[3],
-		mac.addr_bytes[4], mac.addr_bytes[5]);
 #ifndef NDEBUG
 	{
 		char ifname[IF_NAMESIZE];
@@ -1156,6 +1203,10 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	if (err) {
 		err = rte_errno;
 		goto error;
+	}
+	if (priv->link_is_ib) {
+		/* Ether dev is create with default Ether MTU. */
+		eth_dev->data->mtu = priv->mtu;
 	}
 	DRV_LOG(DEBUG, "port %u MTU is %u", eth_dev->data->port_id,
 		priv->mtu);
@@ -1205,9 +1256,9 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	};
 	mlx5_glue->dv_set_context_attr(ctx, MLX5DV_CTX_ATTR_BUF_ALLOCATORS,
 				       (void *)((uintptr_t)&alctr));
-	/* Bring Ethernet device up. */
-	DRV_LOG(DEBUG, "port %u forcing Ethernet interface up",
-		eth_dev->data->port_id);
+	/* Bring Ethernet/IB device up. */
+	DRV_LOG(DEBUG, "forcing %s interface up",
+		priv->link_is_ib ? "IPoIB" : "Ethernet");
 	mlx5_set_link_up(eth_dev);
 	/*
 	 * Even though the interrupt handler is not installed yet,
@@ -1217,11 +1268,15 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	mlx5_link_update(eth_dev, 0);
 	/* Store device configuration on private structure. */
 	priv->config = config;
-	/* Supported Verbs flow priority number detection. */
-	err = mlx5_flow_discover_priorities(eth_dev);
-	if (err < 0)
-		goto error;
-	priv->config.flow_prio = err;
+	if (!priv->link_is_ib) {
+		/* Supported Verbs flow priority number detection. */
+		err = mlx5_flow_discover_priorities(eth_dev);
+		if (err < 0)
+			goto error;
+		priv->config.flow_prio = err;
+	} else {
+		priv->config.flow_prio = 3;
+	}
 	/*
 	 * Once the device is added to the list of memory event
 	 * callback, its global MR cache table cannot be expanded

@@ -1020,6 +1020,8 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 	uint64_t item_flags = 0;
 	uint64_t last_item = 0;
 	uint8_t next_protocol = 0xff;
+	struct priv *priv = dev->data->dev_private;
+	int link_is_ib = priv->link_is_ib;
 
 	if (items == NULL)
 		return -1;
@@ -1163,6 +1165,8 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 			action_flags |= MLX5_FLOW_ACTION_FLAG;
 			break;
 		case RTE_FLOW_ACTION_TYPE_MARK:
+			if (link_is_ib)
+				goto exit_action_not_supported;
 			ret = mlx5_flow_validate_action_mark(actions,
 							     action_flags,
 							     attr,
@@ -1172,6 +1176,8 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 			action_flags |= MLX5_FLOW_ACTION_MARK;
 			break;
 		case RTE_FLOW_ACTION_TYPE_DROP:
+			if (link_is_ib)
+				goto exit_action_not_supported;
 			ret = mlx5_flow_validate_action_drop(action_flags,
 							     attr,
 							     error);
@@ -1189,6 +1195,8 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 			action_flags |= MLX5_FLOW_ACTION_QUEUE;
 			break;
 		case RTE_FLOW_ACTION_TYPE_RSS:
+			if (link_is_ib)
+				goto exit_action_not_supported;
 			ret = mlx5_flow_validate_action_rss(actions,
 							    action_flags, dev,
 							    attr,
@@ -1215,6 +1223,9 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 					  RTE_FLOW_ERROR_TYPE_ACTION, actions,
 					  "no fate action is found");
 	return 0;
+exit_action_not_supported:
+	return rte_flow_error_set(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_ACTION,
+				actions, "action not supported");
 }
 
 /**
@@ -1630,9 +1641,20 @@ flow_verbs_apply(struct rte_eth_dev *dev, struct rte_flow *flow,
 	struct mlx5_flow_verbs *verbs;
 	struct mlx5_flow *dev_flow;
 	int err;
+	struct priv *priv = dev->data->dev_private;
+	struct ibv_qp *rx_qp = NULL;
 
+	if (priv->link_is_ib) {
+		assert(flow->rss.queue_num == 1);
+		struct mlx5_rxq_ctrl *rxq_ctrl = container_of((*priv->rxqs)[0],
+					struct mlx5_rxq_ctrl,
+					rxq);
+		rx_qp = rxq_ctrl->ibv->rq.qp;
+	}
 	LIST_FOREACH(dev_flow, &flow->dev_flows, next) {
 		verbs = &dev_flow->verbs;
+		if (priv->link_is_ib)
+			goto create_flow;
 		if (flow->actions & MLX5_FLOW_ACTION_DROP) {
 			verbs->hrxq = mlx5_hrxq_drop_new(dev);
 			if (!verbs->hrxq) {
@@ -1667,8 +1689,14 @@ flow_verbs_apply(struct rte_eth_dev *dev, struct rte_flow *flow,
 			}
 			verbs->hrxq = hrxq;
 		}
-		verbs->flow = mlx5_glue->create_flow(verbs->hrxq->qp,
-						     verbs->attr);
+create_flow:
+		if (priv->link_is_ib) {
+			verbs->flow = mlx5_glue->create_flow(rx_qp,
+						verbs->attr);
+		} else {
+			verbs->flow = mlx5_glue->create_flow(verbs->hrxq->qp,
+						verbs->attr);
+		}
 		if (!verbs->flow) {
 			rte_flow_error_set(error, errno,
 					   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,

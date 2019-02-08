@@ -52,7 +52,11 @@ mlx5_txq_start(struct rte_eth_dev *dev)
 		if (!txq_ctrl)
 			continue;
 		txq_alloc_elts(txq_ctrl);
-		txq_ctrl->ibv = mlx5_txq_ibv_new(dev, i);
+		if (priv->link_is_ib) {
+			txq_ctrl->ibv = mlx5_txq_ibv_ipoib_new(dev, i);
+		} else {
+			txq_ctrl->ibv = mlx5_txq_ibv_eth_new(dev, i);
+		}
 		if (!txq_ctrl->ibv) {
 			rte_errno = ENOMEM;
 			goto error;
@@ -129,7 +133,12 @@ mlx5_rxq_start(struct rte_eth_dev *dev)
 		ret = rxq_alloc_elts(rxq_ctrl);
 		if (ret)
 			goto error;
-		rxq_ctrl->ibv = mlx5_rxq_ibv_new(dev, i);
+		/* Create new IB Verbs Object */
+		if (priv->link_is_ib) {
+			rxq_ctrl->ibv = mlx5_rxq_ibv_ipoib_new(dev, i);
+		} else {
+			rxq_ctrl->ibv = mlx5_rxq_ibv_eth_new(dev, i);
+		}
 		if (!rxq_ctrl->ibv)
 			goto error;
 	}
@@ -182,11 +191,13 @@ mlx5_dev_start(struct rte_eth_dev *dev)
 		goto error;
 	}
 	mlx5_xstats_init(dev);
-	ret = mlx5_traffic_enable(dev);
-	if (ret) {
-		DRV_LOG(DEBUG, "port %u failed to set defaults flows",
-			dev->data->port_id);
-		goto error;
+	if (!priv->link_is_ib) {
+		ret = mlx5_traffic_enable(dev);
+		if (ret) {
+			DRV_LOG(DEBUG, "port %u failed to set defaults flows",
+				dev->data->port_id);
+			goto error;
+		}
 	}
 	ret = mlx5_flow_start(dev, &priv->flows);
 	if (ret) {

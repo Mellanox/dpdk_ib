@@ -136,7 +136,7 @@ mlx5_vlan_strip_queue_set(struct rte_eth_dev *dev, uint16_t queue, int on)
 		.flags_mask = IBV_WQ_FLAGS_CVLAN_STRIPPING,
 		.flags = vlan_offloads,
 	};
-	ret = mlx5_glue->modify_wq(rxq_ctrl->ibv->wq, &mod);
+	ret = mlx5_glue->modify_wq(rxq_ctrl->ibv->rq.wq, &mod);
 	if (ret) {
 		DRV_LOG(ERR, "port %u failed to modified stripping mode: %s",
 			dev->data->port_id, strerror(rte_errno));

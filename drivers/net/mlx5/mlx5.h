@@ -191,6 +191,7 @@ struct priv {
 	unsigned int representor:1; /* Device is a port representor. */
 	uint16_t domain_id; /* Switch domain identifier. */
 	int32_t representor_id; /* Port representor identifier. */
+	unsigned int link_is_ib:1; /* When set port link layer is Infiniband. */
 	/* RX/TX queues. */
 	unsigned int rxqs_n; /* RX queues array size. */
 	unsigned int txqs_n; /* TX queues array size. */
@@ -285,7 +286,8 @@ int mlx5_sysfs_switch_info(unsigned int ifindex,
 
 /* mlx5_mac.c */
 
-int mlx5_get_mac(struct rte_eth_dev *dev, uint8_t (*mac)[ETHER_ADDR_LEN]);
+int mlx5_get_mac(struct rte_eth_dev *dev, uint8_t *mac);
+void mlx5_ipoib_addr_to_qp_num(uint8_t *ipoib_addr, uint32_t *qp_num);
 void mlx5_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index);
 int mlx5_mac_addr_add(struct rte_eth_dev *dev, struct ether_addr *mac,
 		      uint32_t index, uint32_t vmdq);

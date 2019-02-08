@@ -2047,13 +2047,15 @@ flow_list_create(struct rte_eth_dev *dev, struct mlx5_flows *list,
 	int ret;
 	uint32_t i;
 	uint32_t flow_size;
+	struct priv *priv = dev->data->dev_private;
+	int link_is_ib = priv->link_is_ib;
 
 	ret = flow_drv_validate(dev, attr, items, actions, error);
 	if (ret < 0)
 		return NULL;
 	flow_size = sizeof(struct rte_flow);
 	rss = flow_get_rss_action(actions);
-	if (rss)
+	if (!link_is_ib && rss)
 		flow_size += RTE_ALIGN_CEIL(rss->queue_num * sizeof(uint16_t),
 					    sizeof(void *));
 	else
@@ -2064,7 +2066,7 @@ flow_list_create(struct rte_eth_dev *dev, struct mlx5_flows *list,
 	       flow->drv_type < MLX5_FLOW_TYPE_MAX);
 	flow->queue = (void *)(flow + 1);
 	LIST_INIT(&flow->dev_flows);
-	if (rss && rss->types) {
+	if (!link_is_ib && rss && rss->types) {
 		unsigned int graph_root;
 
 		graph_root = find_graph_root(items, rss->level);

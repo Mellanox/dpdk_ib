@@ -60,6 +60,12 @@
 /* Maximum Packet headers size (L2+L3+L4) for TSO. */
 #define MLX5_MAX_TSO_HEADER 192
 
+/* IPoIB MAC address length. */
+#define IPOIB_ADDR_LEN 20
+
+/* IPoIB header length. */
+#define IPOIB_HDR_LEN 4
+
 /* Default maximum number of Tx queues for vectorized Tx. */
 #if defined(RTE_ARCH_ARM64)
 #define MLX5_VPMD_MAX_TXQS 8

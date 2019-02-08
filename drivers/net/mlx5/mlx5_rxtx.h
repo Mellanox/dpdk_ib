@@ -134,7 +134,10 @@ struct mlx5_rxq_ibv {
 	rte_atomic32_t refcnt; /* Reference counter. */
 	struct mlx5_rxq_ctrl *rxq_ctrl; /* Back pointer to parent. */
 	struct ibv_cq *cq; /* Completion Queue. */
-	struct ibv_wq *wq; /* Work Queue. */
+	union {
+		struct ibv_qp *qp; /* Queue Pair. */
+		struct ibv_wq *wq; /* Work Queue. */
+	} rq;
 	struct ibv_comp_channel *channel;
 };
 
@@ -253,9 +256,10 @@ int mlx5_rx_intr_vec_enable(struct rte_eth_dev *dev);
 void mlx5_rx_intr_vec_disable(struct rte_eth_dev *dev);
 int mlx5_rx_intr_enable(struct rte_eth_dev *dev, uint16_t rx_queue_id);
 int mlx5_rx_intr_disable(struct rte_eth_dev *dev, uint16_t rx_queue_id);
-struct mlx5_rxq_ibv *mlx5_rxq_ibv_new(struct rte_eth_dev *dev, uint16_t idx);
+struct mlx5_rxq_ibv *mlx5_rxq_ibv_eth_new(struct rte_eth_dev *dev, uint16_t idx);
+struct mlx5_rxq_ibv *mlx5_rxq_ibv_ipoib_new(struct rte_eth_dev *dev, uint16_t idx);
 struct mlx5_rxq_ibv *mlx5_rxq_ibv_get(struct rte_eth_dev *dev, uint16_t idx);
-int mlx5_rxq_ibv_release(struct mlx5_rxq_ibv *rxq_ibv);
+int mlx5_rxq_ibv_release(struct mlx5_rxq_ctrl *rxq_ctrl);
 int mlx5_rxq_ibv_releasable(struct mlx5_rxq_ibv *rxq_ibv);
 struct mlx5_rxq_ibv *mlx5_rxq_ibv_drop_new(struct rte_eth_dev *dev);
 void mlx5_rxq_ibv_drop_release(struct rte_eth_dev *dev);
@@ -303,7 +307,8 @@ int mlx5_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 			unsigned int socket, const struct rte_eth_txconf *conf);
 void mlx5_tx_queue_release(void *dpdk_txq);
 int mlx5_tx_uar_remap(struct rte_eth_dev *dev, int fd);
-struct mlx5_txq_ibv *mlx5_txq_ibv_new(struct rte_eth_dev *dev, uint16_t idx);
+struct mlx5_txq_ibv *mlx5_txq_ibv_eth_new(struct rte_eth_dev *dev, uint16_t idx);
+struct mlx5_txq_ibv *mlx5_txq_ibv_ipoib_new(struct rte_eth_dev *dev, uint16_t idx);
 struct mlx5_txq_ibv *mlx5_txq_ibv_get(struct rte_eth_dev *dev, uint16_t idx);
 int mlx5_txq_ibv_release(struct mlx5_txq_ibv *txq_ibv);
 int mlx5_txq_ibv_releasable(struct mlx5_txq_ibv *txq_ibv);

@@ -159,10 +159,10 @@ mlx5_get_master_ifname(const struct rte_eth_dev *dev,
 			continue;
 
 		MKSTR(path, "%s/device/net/%s/%s",
-		      priv->ibdev_path, name,
-		      (dev_type ? "dev_id" : "dev_port"));
-
+			priv->ibdev_path, name,
+			(dev_type ? "dev_id" : "dev_port"));
 		file = fopen(path, "rb");
+
 		if (file == NULL) {
 			if (errno != ENOENT)
 				continue;
@@ -313,9 +313,14 @@ mlx5_get_mtu(struct rte_eth_dev *dev, uint16_t *mtu)
 {
 	struct ifreq request;
 	int ret = mlx5_ifreq(dev, SIOCGIFMTU, &request);
+	struct priv *priv = dev->data->dev_private;
 
 	if (ret)
 		return ret;
+	if (priv->link_is_ib) {
+		/* IPoIB net device substructs the IPoIB header. */
+		request.ifr_mtu += IPOIB_HDR_LEN;
+	}
 	*mtu = request.ifr_mtu;
 	return 0;
 }
@@ -418,33 +423,47 @@ mlx5_dev_configure(struct rte_eth_dev *dev)
 			dev->data->port_id, priv->txqs_n, txqs_n);
 		priv->txqs_n = txqs_n;
 	}
-	if (rxqs_n > priv->config.ind_table_max_size) {
-		DRV_LOG(ERR, "port %u cannot handle this many Rx queues (%u)",
-			dev->data->port_id, rxqs_n);
-		rte_errno = EINVAL;
-		return -rte_errno;
-	}
-	if (rxqs_n == priv->rxqs_n)
-		return 0;
-	DRV_LOG(INFO, "port %u Rx queues number update: %u -> %u",
-		dev->data->port_id, priv->rxqs_n, rxqs_n);
-	priv->rxqs_n = rxqs_n;
-	/* If the requested number of RX queues is not a power of two, use the
-	 * maximum indirection table size for better balancing.
-	 * The result is always rounded to the next power of two. */
-	reta_idx_n = (1 << log2above((rxqs_n & (rxqs_n - 1)) ?
-				     priv->config.ind_table_max_size :
-				     rxqs_n));
-	ret = mlx5_rss_reta_index_resize(dev, reta_idx_n);
-	if (ret)
-		return ret;
-	/* When the number of RX queues is not a power of two, the remaining
-	 * table entries are padded with reused WQs and hashes are not spread
-	 * uniformly. */
-	for (i = 0, j = 0; (i != reta_idx_n); ++i) {
-		(*priv->reta_idx)[i] = j;
-		if (++j == rxqs_n)
-			j = 0;
+	if (priv->link_is_ib) {
+		if (rxqs_n >  (unsigned int)priv->device_attr.orig_attr.max_qp) {
+			DRV_LOG(ERR, "cannot handle this many RX queues (%u)", rxqs_n);
+			return EINVAL;
+		}
+		if (rxqs_n != priv->rxqs_n) {
+			DRV_LOG(INFO, "port %u Rx queues number update: %u -> %u",
+				dev->data->port_id, priv->rxqs_n, rxqs_n);
+			priv->rxqs_n = rxqs_n;
+		}
+	} else {
+		if (rxqs_n > priv->config.ind_table_max_size) {
+			DRV_LOG(ERR, "port %u cannot handle this many Rx queues (%u)",
+				dev->data->port_id, rxqs_n);
+			rte_errno = EINVAL;
+			return -rte_errno;
+		}
+		if (rxqs_n == priv->rxqs_n)
+			return 0;
+		DRV_LOG(INFO, "port %u Rx queues number update: %u -> %u",
+			dev->data->port_id, priv->rxqs_n, rxqs_n);
+		priv->rxqs_n = rxqs_n;
+		/* If the requested number of RX queues is not a power of two, use the
+		 * maximum indirection table size for better balancing.
+		 * The result is always rounded to the next power of two. */
+		reta_idx_n = (1 << log2above((rxqs_n & (rxqs_n - 1)) ?
+					     priv->config.ind_table_max_size :
+					     rxqs_n));
+		if (!priv->link_is_ib) {
+			ret = mlx5_rss_reta_index_resize(dev, reta_idx_n);
+			if (ret)
+				return ret;
+		}
+		/* When the number of RX queues is not a power of two, the remaining
+		 * table entries are padded with reused WQs and hashes are not spread
+		 * uniformly. */
+		for (i = 0, j = 0; (i != reta_idx_n); ++i) {
+			(*priv->reta_idx)[i] = j;
+			if (++j == rxqs_n)
+				j = 0;
+		}
 	}
 	return 0;
 }
