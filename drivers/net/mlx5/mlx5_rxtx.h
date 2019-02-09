@@ -332,8 +332,10 @@ extern uint8_t mlx5_swp_types_table[];
 void mlx5_set_ptype_table(void);
 void mlx5_set_cksum_table(void);
 void mlx5_set_swp_types_table(void);
-uint16_t mlx5_tx_burst(void *dpdk_txq, struct rte_mbuf **pkts,
-		       uint16_t pkts_n);
+uint16_t mlx5_tx_burst_eth(void *dpdk_txq, struct rte_mbuf **pkts,
+			uint16_t pkts_n);
+uint16_t mlx5_tx_burst_ipoib(void *dpdk_txq, struct rte_mbuf **pkts,
+			uint16_t pkts_n);
 uint16_t mlx5_tx_burst_mpw(void *dpdk_txq, struct rte_mbuf **pkts,
 			   uint16_t pkts_n);
 uint16_t mlx5_tx_burst_mpw_inline(void *dpdk_txq, struct rte_mbuf **pkts,

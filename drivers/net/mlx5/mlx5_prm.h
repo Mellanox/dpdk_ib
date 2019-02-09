@@ -182,9 +182,16 @@ struct mlx5_wqe {
 	struct mlx5_wqe_eth_seg_small eseg;
 };
 
-/* Vectorize WQE header. */
-struct mlx5_wqe_v {
+/* Vectorize Ethernet WQE header. */
+struct mlx5_wqe_eth_v {
 	rte_v128u32_t ctrl;
+	rte_v128u32_t eseg;
+};
+
+/* Vectorize IPoIB WQE header. */
+struct mlx5_wqe_ipoib_v {
+	rte_v128u32_t ctrl;
+	rte_v128u32_t rsvd0[4];
 	rte_v128u32_t eseg;
 };
 

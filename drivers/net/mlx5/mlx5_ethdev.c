@@ -1207,7 +1207,7 @@ eth_tx_burst_t
 mlx5_select_tx_function(struct rte_eth_dev *dev)
 {
 	struct priv *priv = dev->data->dev_private;
-	eth_tx_burst_t tx_pkt_burst = mlx5_tx_burst;
+	eth_tx_burst_t tx_pkt_burst = mlx5_tx_burst_eth;
 	struct mlx5_dev_config *config = &priv->config;
 	uint64_t tx_offloads = dev->data->dev_conf.txmode.offloads;
 	int tso = !!(tx_offloads & (DEV_TX_OFFLOAD_TCP_TSO |
@@ -1221,6 +1221,9 @@ mlx5_select_tx_function(struct rte_eth_dev *dev)
 	int vlan_insert = !!(tx_offloads & DEV_TX_OFFLOAD_VLAN_INSERT);
 
 	assert(priv != NULL);
+	if (priv->link_is_ib) {
+		return mlx5_tx_burst_ipoib;
+	}
 	/* Select appropriate TX function. */
 	if (vlan_insert || tso || swp)
 		return tx_pkt_burst;
