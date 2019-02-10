@@ -530,6 +530,29 @@ struct mlx5_mini_cqe8 {
 	uint32_t byte_cnt;
 };
 
+/* UD basic address vector structure. */
+struct mlx5_basic_av {
+	uint32_t qkey;
+	uint32_t rsvd0;
+	uint32_t qp;
+	uint16_t rsvd1;
+	uint16_t rlid;
+} __rte_aligned(MLX5_WQE_DWORD_SIZE);
+
+/* UD extended address vector structure. */
+struct mlx5_ext_av {
+	uint8_t rsvd0[11];
+	uint8_t hop_limit;
+	uint32_t grh_gid_fl;
+	uint8_t rgid[16];
+} __rte_aligned(MLX5_WQE_DWORD_SIZE);
+
+/* UD address vector structure. */
+struct mlx5_ipoib_av {
+	struct mlx5_basic_av base;
+	struct mlx5_ext_av grh_sec;
+};
+
 /**
  * Convert a user mark to flow mark.
  *

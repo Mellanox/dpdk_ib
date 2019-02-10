@@ -1391,3 +1391,93 @@ mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 	*info = data;
 	return 0;
 }
+
+/**
+ * Query the local AV from the device.
+ *
+ * @param[in] priv
+ *   Pointer to private structure.
+ * @param[out] av
+ *   Pointer to infiniband address vector struct.
+ *
+ * @return
+ *   0 on success, errno value on failure.
+ */
+static int
+priv_ib_av_get(struct rte_eth_dev *dev, struct rte_eth_ib_av *av)
+{
+	struct priv *priv = dev->data->dev_private;
+	struct ibv_port_attr port_attr;
+	uint8_t ipoib_addr[IPOIB_ADDR_LEN] = {0};
+	int err = 0;
+
+	/* Port ID is 1 */
+	err = mlx5_glue->query_port(priv->ctx, 1, &port_attr);
+	if (err)
+		return err;
+	av->lid = port_attr.lid;
+	av->qkey = IPOIB_DEFAULT_QKEY;
+	err = mlx5_get_mac(dev, ipoib_addr);
+	if (err)
+		return err;
+	mlx5_ipoib_addr_to_qp_num(ipoib_addr, &av->qp);
+	return err;
+}
+
+/**
+ * DPDK callback to query local infiniband address vector.
+ *
+ * @param[in] dev
+ *   Pointer to Ethernet device structure.
+ * @param[out] av
+ *   Pointer to infiniband address vector struct.
+ *
+ * @return
+ *   0 on success, errno value on failure.
+ */
+int
+mlx5_ib_av_get(struct rte_eth_dev *dev, struct rte_eth_ib_av *av)
+{
+	struct priv *priv = dev->data->dev_private;
+	int ret;
+
+	priv_lock(priv);
+	ret = priv_ib_av_get(dev, av);
+	priv_unlock(priv);
+	return ret;
+}
+
+/**
+ * DPDK callback to translate infiniband address vector to
+ * device specific format.
+ *
+ * The function replace the context of the av struct.
+ *
+ * @param[in] dev
+ *   Pointer to Ethernet device structure.
+ * @param[in/out] av
+ *   Pointer to infiniband address vector struct.
+ ** @param[out] size
+ *   The size of the new address vector.
+ *
+ * @return
+ *   0 on success, errno value on failure.
+ */
+int
+mlx5_ib_av_translate(struct rte_eth_dev *dev, struct rte_eth_ib_av *av,
+		     unsigned int *size)
+{
+	struct mlx5_ipoib_av ipoib_av;
+
+	(void)dev;
+	if (sizeof(*av) < sizeof(ipoib_av))
+		return -1;
+	memset(&ipoib_av, 0, sizeof(ipoib_av));
+	ipoib_av.base.qkey = htonl(av->qkey);
+	/* NIC requires to put full AV. */
+	ipoib_av.base.qp = (htonl(av->qp | 0x80000000));
+	ipoib_av.base.rlid = htons(av->lid);
+	rte_memcpy(av, &ipoib_av, sizeof(ipoib_av));
+	*size = sizeof(ipoib_av);
+	return 0;
+}

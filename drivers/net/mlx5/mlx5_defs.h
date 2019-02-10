@@ -66,6 +66,9 @@
 /* IPoIB header length. */
 #define IPOIB_HDR_LEN 4
 
+/* IPoIB Queue Key. */
+#define IPOIB_DEFAULT_QKEY 0xb1b
+
 /* GRH header length. */
 #define GRH_HDR_LEN 40
 

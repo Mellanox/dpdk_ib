@@ -30,6 +30,7 @@
 #include <rte_interrupts.h>
 #include <rte_errno.h>
 #include <rte_flow.h>
+#include <rte_spinlock.h>
 
 #include "mlx5_utils.h"
 #include "mlx5_mr.h"
@@ -239,6 +240,7 @@ struct priv {
 	rte_spinlock_t uar_lock[MLX5_UAR_PAGE_NUM_MAX];
 	/* UAR same-page access control required in 32bit implementations. */
 #endif
+	rte_spinlock_t lock; /* Lock for control functions. */
 	struct mlx5_flow_tcf_context *tcf_context; /* TC flower context. */
 };
 
@@ -283,6 +285,9 @@ unsigned int mlx5_dev_to_port_id(const struct rte_device *dev,
 				 unsigned int port_list_n);
 int mlx5_sysfs_switch_info(unsigned int ifindex,
 			   struct mlx5_switch_info *info);
+int mlx5_ib_av_get(struct rte_eth_dev *dev, struct rte_eth_ib_av *av);
+int mlx5_ib_av_translate(struct rte_eth_dev *dev, struct rte_eth_ib_av *av,
+			unsigned int *size);
 
 /* mlx5_mac.c */
 
@@ -404,5 +409,30 @@ int mlx5_nl_allmulti(struct rte_eth_dev *dev, int enable);
 unsigned int mlx5_nl_ifindex(int nl, const char *name);
 int mlx5_nl_switch_info(int nl, unsigned int ifindex,
 			struct mlx5_switch_info *info);
+
+/**
+ * Lock private structure to protect it from concurrent access in the
+ * control path.
+ *
+ * @param priv
+ *   Pointer to private structure.
+ */
+static inline void
+priv_lock(struct priv *priv)
+{
+	rte_spinlock_lock(&priv->lock);
+}
+
+/**
+ * Unlock private structure.
+ *
+ * @param priv
+ *   Pointer to private structure.
+ */
+static inline void
+priv_unlock(struct priv *priv)
+{
+	rte_spinlock_unlock(&priv->lock);
+}
 
 #endif /* RTE_PMD_MLX5_H_ */
