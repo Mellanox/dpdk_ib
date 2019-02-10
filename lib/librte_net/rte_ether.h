@@ -294,6 +294,15 @@ struct vxlan_hdr {
 	uint32_t vx_vni;   /**< VNI (24) + Reserved (8). */
 } __attribute__((__packed__));
 
+/**
+ * IPoIB protocol header.
+ * Contains the 16-bit type and reserved field (16 bits)
+ */
+struct ipoib_hdr {
+	uint16_t type;
+	uint16_t rsvd;
+} __attribute__((__packed__));
+
 struct rte_eth_ib_av {
 	uint32_t        qkey;
 	uint32_t        qp;
