@@ -294,6 +294,12 @@ struct vxlan_hdr {
 	uint32_t vx_vni;   /**< VNI (24) + Reserved (8). */
 } __attribute__((__packed__));
 
+struct rte_eth_ib_av {
+	uint32_t        qkey;
+	uint32_t        qp;
+	uint16_t        lid;
+} __rte_cache_aligned;
+
 /* Ethernet frame types */
 #define ETHER_TYPE_IPv4 0x0800 /**< IPv4 Protocol. */
 #define ETHER_TYPE_IPv6 0x86DD /**< IPv6 Protocol. */

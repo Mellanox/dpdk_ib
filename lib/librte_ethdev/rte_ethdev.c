@@ -4480,3 +4480,32 @@ RTE_INIT(ethdev_init_log)
 	if (rte_eth_dev_logtype >= 0)
 		rte_log_set_level(rte_eth_dev_logtype, RTE_LOG_INFO);
 }
+
+int
+rte_eth_dev_get_local_ib_av(uint8_t port_id, struct rte_eth_ib_av *av)
+{
+	int ret;
+	struct rte_eth_dev *dev;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+	dev = &rte_eth_devices[port_id];
+	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->ib_av_get, -ENOTSUP);
+
+	ret = (*dev->dev_ops->ib_av_get)(dev, av);
+	return ret;
+}
+
+int
+rte_eth_dev_translate_ib_av(uint8_t port_id, struct rte_eth_ib_av *av,
+				unsigned int *size)
+{
+	int ret;
+	struct rte_eth_dev *dev;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+	dev = &rte_eth_devices[port_id];
+	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->ib_av_translate, -ENOTSUP);
+
+	ret = (*dev->dev_ops->ib_av_translate)(dev, av, size);
+	return ret;
+}

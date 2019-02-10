@@ -4354,6 +4354,13 @@ rte_eth_tx_buffer(uint16_t port_id, uint16_t queue_id,
 	return rte_eth_tx_buffer_flush(port_id, queue_id, buffer);
 }
 
+int
+rte_eth_dev_get_local_ib_av(uint8_t port_id, struct rte_eth_ib_av *av);
+
+int
+rte_eth_dev_translate_ib_av(uint8_t port_id, struct rte_eth_ib_av *av,
+				unsigned int *size);
+
 #ifdef __cplusplus
 }
 #endif
