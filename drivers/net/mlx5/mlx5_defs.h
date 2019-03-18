@@ -66,6 +66,9 @@
 /* IPoIB header length. */
 #define IPOIB_HDR_LEN 4
 
+/* GRH header length. */
+#define GRH_HDR_LEN 40
+
 /* Default maximum number of Tx queues for vectorized Tx. */
 #if defined(RTE_ARCH_ARM64)
 #define MLX5_VPMD_MAX_TXQS 8

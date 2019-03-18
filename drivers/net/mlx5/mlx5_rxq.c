@@ -1238,8 +1238,12 @@ mlx5_rxq_ibv_ipoib_new(struct rte_eth_dev *dev, uint16_t idx)
 
 		scat = &((volatile struct mlx5_wqe_data_seg *)
 				rxq_data->wqes)[i];
-		addr = rte_pktmbuf_mtod(buf, uintptr_t);
-		byte_count = DATA_LEN(buf);
+		/*
+		 * WQE pointers starts from GRH_HDR_LEN below
+		 * the mbuf data ptr.
+		 */
+		addr = rte_pktmbuf_mtod(buf, uintptr_t) - GRH_HDR_LEN;
+		byte_count = DATA_LEN(buf) + GRH_HDR_LEN;
 
 		/* scat->addr must be able to store a pointer. */
 		assert(sizeof(scat->addr) >= sizeof(uintptr_t));

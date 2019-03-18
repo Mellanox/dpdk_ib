@@ -480,7 +480,7 @@ mlx5_rx_descriptor_status(void *rx_queue, uint16_t offset)
 			container_of(rxq, struct mlx5_rxq_ctrl, rxq);
 	struct rte_eth_dev *dev = ETH_DEV(rxq_ctrl->priv);
 
-	if (dev->rx_pkt_burst != mlx5_rx_burst) {
+	if (dev->rx_pkt_burst != mlx5_rx_burst_eth) {
 		rte_errno = ENOTSUP;
 		return -rte_errno;
 	}
@@ -512,7 +512,7 @@ mlx5_rx_queue_count(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	struct priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_data *rxq;
 
-	if (dev->rx_pkt_burst != mlx5_rx_burst) {
+	if (dev->rx_pkt_burst != mlx5_rx_burst_eth) {
 		rte_errno = ENOTSUP;
 		return -rte_errno;
 	}
@@ -1974,7 +1974,7 @@ rxq_cq_to_mbuf(struct mlx5_rxq_data *rxq, struct rte_mbuf *pkt,
 }
 
 /**
- * DPDK callback for RX.
+ * DPDK callback for RX Ethernet.
  *
  * @param dpdk_rxq
  *   Generic pointer to RX queue structure.
@@ -1987,7 +1987,7 @@ rxq_cq_to_mbuf(struct mlx5_rxq_data *rxq, struct rte_mbuf *pkt,
  *   Number of packets successfully received (<= pkts_n).
  */
 uint16_t
-mlx5_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
+mlx5_rx_burst_eth(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 {
 	struct mlx5_rxq_data *rxq = dpdk_rxq;
 	const unsigned int wqe_cnt = (1 << rxq->elts_n) - 1;
@@ -2110,6 +2110,141 @@ skip:
 #endif
 	return i;
 }
+
+/**
+ * DPDK callback for RX IPoIB.
+ *
+ * @param dpdk_rxq
+ *   Generic pointer to RX queue structure.
+ * @param[out] pkts
+ *   Array to store received packets.
+ * @param pkts_n
+ *   Maximum number of packets in array.
+ *
+ * @return
+ *   Number of packets successfully received (<= pkts_n).
+ */
+uint16_t
+mlx5_rx_burst_ipoib(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
+{
+	struct mlx5_rxq_data *rxq = dpdk_rxq;
+	const unsigned int wqe_cnt = (1 << rxq->elts_n) - 1;
+	const unsigned int cqe_cnt = (1 << rxq->cqe_n) - 1;
+	const unsigned int sges_n = rxq->sges_n;
+	struct rte_mbuf *pkt = NULL;
+	struct rte_mbuf *seg = NULL;
+	volatile struct mlx5_cqe *cqe =
+		&(*rxq->cqes)[rxq->cq_ci & cqe_cnt];
+	unsigned int i = 0;
+	unsigned int rq_ci = rxq->rq_ci << sges_n;
+	int len = 0; /* keep its value across iterations. */
+
+	while (pkts_n) {
+		unsigned int idx = rq_ci & wqe_cnt;
+		volatile struct mlx5_wqe_data_seg *wqe =
+			&((volatile struct mlx5_wqe_data_seg *)rxq->wqes)[idx];
+		struct rte_mbuf *rep = (*rxq->elts)[idx];
+		volatile struct mlx5_mini_cqe8 *mcqe = NULL;
+
+		if (pkt)
+			NEXT(seg) = rep;
+		seg = rep;
+		rte_prefetch0(seg);
+		rte_prefetch0(cqe);
+		rte_prefetch0(wqe);
+		rep = rte_mbuf_raw_alloc(rxq->mp);
+		if (unlikely(rep == NULL)) {
+			++rxq->stats.rx_nombuf;
+			if (!pkt) {
+				/*
+				 * no buffers before we even started,
+				 * bail out silently.
+				 */
+				break;
+			}
+			while (pkt != seg) {
+				assert(pkt != (*rxq->elts)[idx]);
+				rep = NEXT(pkt);
+				NEXT(pkt) = NULL;
+				NB_SEGS(pkt) = 1;
+				rte_mbuf_raw_free(pkt);
+				pkt = rep;
+			}
+			break;
+		}
+		if (!pkt) {
+			cqe = &(*rxq->cqes)[rxq->cq_ci & cqe_cnt];
+			len = mlx5_rx_poll_len(rxq, cqe, cqe_cnt, &mcqe);
+			if (!len) {
+				rte_mbuf_raw_free(rep);
+				break;
+			}
+			if (unlikely(len == -1)) {
+				/* RX error, packet is likely too large. */
+				rte_mbuf_raw_free(rep);
+				++rxq->stats.idropped;
+				goto skip;
+			}
+			pkt = seg;
+			len -= GRH_HDR_LEN;
+			assert(len >= (rxq->crc_present << 2));
+			pkt->ol_flags = 0;
+			PKT_LEN(pkt) = len;
+		}
+		DATA_LEN(rep) = DATA_LEN(seg);
+		PKT_LEN(rep) = PKT_LEN(seg);
+		SET_DATA_OFF(rep, DATA_OFF(seg));
+		PORT(rep) = PORT(seg);
+		(*rxq->elts)[idx] = rep;
+		/*
+		 * Fill NIC descriptor with the new buffer.  The lkey and size
+		 * of the buffers are already known, only the buffer address
+		 * changes.
+		 * Since HW always preserves a place for the GRH, the wqe
+		 * pointer is set in way that will keep the packet data
+		 * aligned.
+		 */
+		wqe->addr = rte_cpu_to_be_64(rte_pktmbuf_mtod(rep, uintptr_t) - GRH_HDR_LEN);
+		/* If there's only one MR, no need to replace LKey in WQE. */
+		if (unlikely(mlx5_mr_btree_len(&rxq->mr_ctrl.cache_bh) > 1))
+			wqe->lkey = mlx5_rx_mb2mr(rxq, rep);
+		if (len > DATA_LEN(seg)) {
+			len -= DATA_LEN(seg);
+			++NB_SEGS(pkt);
+			++rq_ci;
+			continue;
+		}
+		DATA_LEN(seg) = len;
+#ifdef MLX5_PMD_SOFT_COUNTERS
+		/* Increment bytes counter. */
+		rxq->stats.ibytes += PKT_LEN(pkt);
+#endif
+		/* Return packet. */
+		*(pkts++) = pkt;
+		pkt = NULL;
+		--pkts_n;
+		++i;
+skip:
+		/* Align consumer index to the next stride. */
+		rq_ci >>= sges_n;
+		++rq_ci;
+		rq_ci <<= sges_n;
+	}
+	if (unlikely((i == 0) && ((rq_ci >> sges_n) == rxq->rq_ci)))
+		return 0;
+	/* Update the consumer index. */
+	rxq->rq_ci = rq_ci >> sges_n;
+	rte_cio_wmb();
+	*rxq->cq_db = rte_cpu_to_be_32(rxq->cq_ci);
+	rte_cio_wmb();
+	*rxq->rq_db = rte_cpu_to_be_32(rxq->rq_ci);
+#ifdef MLX5_PMD_SOFT_COUNTERS
+	/* Increment packets counter. */
+	rxq->stats.ipackets += i;
+#endif
+	return i;
+}
+
 
 void
 mlx5_mprq_buf_free_cb(void *addr __rte_unused, void *opaque)

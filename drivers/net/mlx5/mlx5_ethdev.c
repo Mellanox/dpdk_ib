@@ -606,7 +606,7 @@ mlx5_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 		RTE_PTYPE_UNKNOWN
 	};
 
-	if (dev->rx_pkt_burst == mlx5_rx_burst ||
+	if (dev->rx_pkt_burst == mlx5_rx_burst_eth ||
 	    dev->rx_pkt_burst == mlx5_rx_burst_mprq ||
 	    dev->rx_pkt_burst == mlx5_rx_burst_vec)
 		return ptypes;
@@ -1264,9 +1264,14 @@ mlx5_select_tx_function(struct rte_eth_dev *dev)
 eth_rx_burst_t
 mlx5_select_rx_function(struct rte_eth_dev *dev)
 {
-	eth_rx_burst_t rx_pkt_burst = mlx5_rx_burst;
+	eth_rx_burst_t rx_pkt_burst = mlx5_rx_burst_eth;
 
 	assert(dev != NULL);
+	struct priv *priv = dev->data->dev_private;
+	if (priv->link_is_ib) {
+		return mlx5_rx_burst_ipoib;
+	}
+
 	if (mlx5_check_vec_rx_support(dev) > 0) {
 		rx_pkt_burst = mlx5_rx_burst_vec;
 		DRV_LOG(DEBUG, "port %u selected Rx vectorized function",

@@ -340,7 +340,8 @@ uint16_t mlx5_tx_burst_mpw_inline(void *dpdk_txq, struct rte_mbuf **pkts,
 				  uint16_t pkts_n);
 uint16_t mlx5_tx_burst_empw(void *dpdk_txq, struct rte_mbuf **pkts,
 			    uint16_t pkts_n);
-uint16_t mlx5_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n);
+uint16_t mlx5_rx_burst_eth(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n);
+uint16_t mlx5_rx_burst_ipoib(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n);
 void mlx5_mprq_buf_free_cb(void *addr, void *opaque);
 void mlx5_mprq_buf_free(struct mlx5_mprq_buf *buf);
 uint16_t mlx5_rx_burst_mprq(void *dpdk_rxq, struct rte_mbuf **pkts,

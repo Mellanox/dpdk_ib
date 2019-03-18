@@ -1005,6 +1005,14 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	priv->pd = pd;
 	priv->link_is_ib = (link_layer == IBV_LINK_LAYER_INFINIBAND);
 	priv->mtu = priv->link_is_ib ? 0 : ETHER_MTU;
+	if (priv->link_is_ib) {
+		if (RTE_PKTMBUF_HEADROOM < GRH_HDR_LEN) {
+			ERROR("when link is IB mbuf headroom must be "
+				"larger than %u", GRH_HDR_LEN);
+			err = EINVAL;
+			goto error;
+		}
+	}
 #ifndef RTE_ARCH_64
 	/* Initialize UAR access locks for 32bit implementations. */
 	rte_spinlock_init(&priv->uar_lock_cq);
