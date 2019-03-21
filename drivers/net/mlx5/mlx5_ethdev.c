@@ -1271,12 +1271,19 @@ eth_rx_burst_t
 mlx5_select_rx_function(struct rte_eth_dev *dev)
 {
 	eth_rx_burst_t rx_pkt_burst = mlx5_rx_burst_eth;
-
 	assert(dev != NULL);
 	struct priv *priv = dev->data->dev_private;
+
 	if (priv->link_is_ib) {
-		return mlx5_rx_burst_ipoib;
-	}
+		if (dev->data->scattered_rx) {
+			rx_pkt_burst = mlx5_rx_burst_ipoib;
+			DRV_LOG(INFO, "rx_function is mlx5_rx_burst_ipoib");
+		} else {
+			rx_pkt_burst = mlx5_rx_burst_ipoib_no_sges;
+			DRV_LOG(INFO, "rx_function is mlx5_rx_burst_ipoib_no_sges");
+		}
+		return rx_pkt_burst;
+	} 
 
 	if (mlx5_check_vec_rx_support(dev) > 0) {
 		rx_pkt_burst = mlx5_rx_burst_vec;

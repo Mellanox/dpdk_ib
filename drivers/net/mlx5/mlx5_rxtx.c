@@ -2560,6 +2560,156 @@ skip:
 	return i;
 }
 
+/**
+ * Replenish buffers for RX in bulk.
+ *
+ * @param rxq
+ *   Pointer to RX queue structure.
+ * @param n
+ *   Number of buffers to be replenished.
+ */
+static inline void
+mlx5_rx_replenish_bulk_mbuf_ipoib(struct mlx5_rxq_data *rxq, uint16_t n)
+{
+	const uint16_t q_n = 1 << rxq->elts_n;
+	const uint16_t q_mask = q_n - 1;
+	uint16_t elts_idx = rxq->rq_ci & q_mask;
+	struct rte_mbuf **elts = &(*rxq->elts)[elts_idx];
+	volatile struct mlx5_wqe_data_seg *wq =
+		&((volatile struct mlx5_wqe_data_seg *)rxq->wqes)[elts_idx];
+	unsigned int i;
+
+	assert(n >= MLX5_VPMD_RXQ_RPLNSH_THRESH(q_n));
+	assert(n <= (uint16_t)(q_n - (rxq->rq_ci - rxq->rq_pi)));
+	/* Not to cross queue end. */
+	n = RTE_MIN(n, q_n - elts_idx);
+	if (rte_mempool_get_bulk(rxq->mp, (void *)elts, n) < 0) {
+		rxq->stats.rx_nombuf += n;
+		return;
+	}
+	for (i = 0; i < n; ++i) {
+		wq[i].addr = rte_cpu_to_be_64((uintptr_t)elts[i]->buf_addr +
+				RTE_PKTMBUF_HEADROOM - GRH_HDR_LEN);
+		/* If there's only one MR, no need to replace LKey in WQE. */
+		if (unlikely(mlx5_mr_btree_len(&rxq->mr_ctrl.cache_bh) > 1))
+			wq[i].lkey = mlx5_rx_mb2mr(rxq, elts[i]);
+	}
+	rxq->rq_ci += n;
+	/* Prevent overflowing into consumed mbufs. */
+	elts_idx = rxq->rq_ci & q_mask;
+	rte_cio_wmb();
+	*rxq->rq_db = rte_cpu_to_be_32(rxq->rq_ci);
+}
+
+/**
+ * DPDK callback for RX IPoIB w/o Scatter Gather.
+ *
+ * @param dpdk_rxq
+ *   Generic pointer to RX queue structure.
+ * @param[out] pkts
+ *   Array to store received packets.
+ * @param pkts_n
+ *   Maximum number of packets in array.
+ *
+ * @return
+ *   Number of packets successfully received (<= pkts_n).
+ */
+uint16_t
+mlx5_rx_burst_ipoib_no_sges(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
+{
+	struct mlx5_rxq_data *rxq = dpdk_rxq;
+	assert (rxq->sges_n == 0);
+	const uint16_t q_n = 1 << rxq->cqe_n;
+	uint16_t repl_n = 0;
+	const unsigned int wqe_cnt = (1 << rxq->elts_n) - 1;
+	const unsigned int cqe_cnt = (1 << rxq->cqe_n) - 1;
+	struct rte_mbuf *pkt = NULL;
+	volatile struct mlx5_cqe *cqe =
+		&(*rxq->cqes)[rxq->cq_ci & cqe_cnt];
+	unsigned int i = 0;
+	unsigned int rq_ci = (rxq->rq_ci) + rxq->rq_repl_thresh;
+	unsigned int first_idx = rq_ci & wqe_cnt;
+	const unsigned char port = rxq->port_id;
+	int len = 0; /* keep its value across iterations. */
+
+	rte_prefetch0(cqe);
+	/* prefetch the next cache line (no point in prefetching the current) */
+	rte_prefetch0(&(*rxq->elts)[(first_idx + (64/sizeof(struct rte_mbuf *))) & wqe_cnt]);
+
+	while (pkts_n) {
+		unsigned int idx = rq_ci & wqe_cnt;
+		struct rte_mbuf *rep = (*rxq->elts)[idx];
+		volatile struct mlx5_mini_cqe8 *mcqe = NULL;
+		unsigned int next_idx = (idx + 1) & wqe_cnt;
+
+		if ((idx & 4) == 0) {
+			struct rte_mbuf **next_mbufs_cache_line =
+				&(*rxq->elts)[(idx + (64/sizeof(struct rte_mbuf *))) & wqe_cnt];
+			/* we start a new cache line, prefetch the next one */
+			rte_prefetch0(next_mbufs_cache_line);
+		}
+
+		/* prefetch the next mbuf header */
+		rte_prefetch0((*rxq->elts)[next_idx]);
+		cqe = &(*rxq->cqes)[rxq->cq_ci & cqe_cnt];
+		len = mlx5_rx_poll_len(rxq, cqe, cqe_cnt, &mcqe);
+		volatile struct mlx5_cqe *next_cqe = &(*rxq->cqes)[rxq->cq_ci & cqe_cnt];
+		rte_prefetch0(next_cqe);
+		if (!len) {
+			rte_mbuf_raw_free(rep);
+			break;
+		}
+		if (unlikely(len == -1)) {
+			/* RX error, packet is likely too large. */
+			rte_mbuf_raw_free(rep);
+			++rxq->stats.idropped;
+			goto skip;
+		}
+		pkt = rep;
+		len -= GRH_HDR_LEN;
+		assert(len >= (rxq->crc_present << 2));
+		pkt->ol_flags = 0;
+		
+		PORT(pkt) = port;
+		PKT_LEN(pkt) = len;
+		DATA_LEN(pkt) = len;
+#ifdef MLX5_PMD_SOFT_COUNTERS
+		/* Increment bytes counter. */
+		rxq->stats.ibytes += PKT_LEN(pkt);
+#endif
+		/* Return packet. */
+		*(pkts++) = pkt;
+		pkt = NULL;
+		--pkts_n;
+		++i;
+skip:
+		/* Align consumer index to the next stride. */
+		++rq_ci;
+	}
+	if (unlikely((i == 0) && (rq_ci == rxq->rq_ci)))
+		return 0;
+	repl_n = q_n - (rxq->rq_ci - rxq->rq_pi);
+	if (repl_n >= rxq->rq_repl_thresh) {
+		/*
+		 * Fill NIC descriptor with the new buffer.  The lkey and size
+		 * of the buffers are already known, only the buffer address
+		 * changes.
+		 * Since HW always preserves a place for the GRH, the wqe
+		 * pointer is set in way that will keep the packet data
+		 * aligned.
+		 */
+		mlx5_rx_replenish_bulk_mbuf_ipoib(rxq, repl_n);
+	}
+	rte_compiler_barrier();
+	/* Update the consumer index. */
+	*rxq->cq_db = rte_cpu_to_be_32(rxq->cq_ci);
+#ifdef MLX5_PMD_SOFT_COUNTERS
+	/* Increment packets counter. */
+	rxq->stats.ipackets += i;
+#endif
+	return i;
+}
+
 
 void
 mlx5_mprq_buf_free_cb(void *addr __rte_unused, void *opaque)

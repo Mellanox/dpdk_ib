@@ -1765,6 +1765,10 @@ static int rxq_ctrl_setup_ipoib(struct rte_eth_dev *dev, struct mlx5_rxq_ctrl *t
 		rte_errno = EINVAL;
 		goto error;
 	}
+	if (tmpl->rxq.sges_n == 0)
+		dev->data->scattered_rx = 0;
+	else
+		dev->data->scattered_rx = 1;
 	return 0;
 error:
 	return rte_errno;
