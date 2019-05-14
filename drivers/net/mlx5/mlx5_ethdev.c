@@ -451,11 +451,9 @@ mlx5_dev_configure(struct rte_eth_dev *dev)
 		reta_idx_n = (1 << log2above((rxqs_n & (rxqs_n - 1)) ?
 					     priv->config.ind_table_max_size :
 					     rxqs_n));
-		if (!priv->link_is_ib) {
-			ret = mlx5_rss_reta_index_resize(dev, reta_idx_n);
-			if (ret)
-				return ret;
-		}
+		ret = mlx5_rss_reta_index_resize(dev, reta_idx_n);
+		if (ret)
+			return ret;
 		/* When the number of RX queues is not a power of two, the remaining
 		 * table entries are padded with reused WQs and hashes are not spread
 		 * uniformly. */
