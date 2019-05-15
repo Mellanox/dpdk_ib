@@ -1135,7 +1135,7 @@ mlx5_rxq_ibv_ipoib_new(struct rte_eth_dev *dev, uint16_t idx)
 		dev->data->port_id, priv->device_attr.orig_attr.max_sge);
 	mlx5_get_mac(dev, (uint8_t *) ipoib_addr);
 	mlx5_ipoib_addr_to_qp_num(ipoib_addr, &ipoib_qp_num);
-	DEBUG("port %u underlay qp num is 0x%x", priv->port, ipoib_qp_num);
+	DRV_LOG(DEBUG, "port %u underlay qp num is 0x%x", dev->data->port_id, ipoib_qp_num);
 	attr.qp.ibv = (struct ibv_qp_init_attr_ex){
 		/* CQ to be associated with the send queue. */
 		.send_cq = tmpl->cq,
