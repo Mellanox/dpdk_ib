@@ -1224,10 +1224,12 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	eth_dev->rx_pkt_burst = removed_rx_burst;
 	eth_dev->tx_pkt_burst = removed_tx_burst;
 	eth_dev->dev_ops = &mlx5_dev_ops;
-	/* Register MAC address. */
-	claim_zero(mlx5_mac_addr_add(eth_dev, &mac, 0, 0));
-	if (config.vf && config.vf_nl_en)
-		mlx5_nl_mac_addr_sync(eth_dev);
+	if (!priv->link_is_ib) {
+		/* Register MAC address. */
+		claim_zero(mlx5_mac_addr_add(eth_dev, &mac, 0, 0));
+		if (config.vf && config.vf_nl_en)
+			mlx5_nl_mac_addr_sync(eth_dev);
+	}
 	priv->tcf_context = mlx5_flow_tcf_context_create();
 	if (!priv->tcf_context) {
 		err = -rte_errno;
