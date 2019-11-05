@@ -952,7 +952,7 @@ mlx5_tx_burst_ipoib(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 		uintptr_t addr;
 		uint16_t pkt_inline_sz = MLX5_WQE_DWORD_SIZE + 2;
 		uint16_t ipoib_hdr;
-		uint8_t cs_flags;
+		uint8_t cs_flags = 0;
 #ifdef MLX5_PMD_SOFT_COUNTERS
 		uint32_t total_length = 0;
 #endif
@@ -1021,9 +1021,11 @@ mlx5_tx_burst_ipoib(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 		length -= pkt_inline_sz;
 		addr += pkt_inline_sz;
 		/* Should we enable HW CKSUM offload. */
+		if (buf->ol_flags & PKT_TX_IP_CKSUM)
+			cs_flags = MLX5_ETH_WQE_L3_CSUM;
 		if (buf->ol_flags &
-			(PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM | PKT_TX_UDP_CKSUM))
-			cs_flags = MLX5_ETH_WQE_L3_CSUM | MLX5_ETH_WQE_L4_CSUM;
+			(PKT_TX_TCP_CKSUM | PKT_TX_UDP_CKSUM))
+			cs_flags |= MLX5_ETH_WQE_L4_CSUM;
 
 		/* Inline if enough room. */
 		if (max_inline) {
@@ -2504,6 +2506,9 @@ mlx5_rx_burst_ipoib(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 			len -= GRH_HDR_LEN;
 			assert(len >= (rxq->crc_present << 2));
 			pkt->ol_flags = 0;
+			if (rxq->csum) {
+				pkt->ol_flags |= rxq_cq_to_ol_flags(cqe);
+			}
 			PKT_LEN(pkt) = len;
 		}
 		DATA_LEN(rep) = DATA_LEN(seg);

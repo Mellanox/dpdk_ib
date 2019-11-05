@@ -1067,7 +1067,12 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 			strerror(rte_errno));
 		goto error;
 	}
-	config.hw_csum = !!(attr.device_cap_flags_ex & IBV_DEVICE_RAW_IP_CSUM);
+
+	if (!priv->link_is_ib) {
+		config.hw_csum = !!(attr.device_cap_flags_ex & IBV_DEVICE_RAW_IP_CSUM);
+	} else {
+		config.hw_csum = !!(attr.device_cap_flags_ex & IBV_DEVICE_UD_IP_CSUM);
+	}
 	DRV_LOG(DEBUG, "checksum offloading is %ssupported",
 		(config.hw_csum ? "" : "not "));
 #if !defined(HAVE_IBV_DEVICE_COUNTERS_SET_V42) && \
